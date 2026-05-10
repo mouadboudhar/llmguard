@@ -310,6 +310,25 @@
     animation: slideIn 0.18s ease-out;
   }
 
+  /* Provider pills (Add Endpoint modal) */
+  .provider-pill {
+    padding: 8px 4px;
+    border: 1px solid var(--border-2);
+    background: var(--bg-1);
+    font-size: 11.5px;
+    color: var(--text-2);
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .provider-pill:hover { border-color: var(--border-3); color: var(--text); }
+  .provider-pill.on {
+    border-color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    color: var(--accent);
+    font-weight: 500;
+  }
+
   /* Pulse dot */
   .cdot {
     width: 6px; height: 6px;
