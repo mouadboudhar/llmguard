@@ -1,12 +1,43 @@
-import uvicorn
-from fastapi import FastAPI
+import logging
+import os
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="LLMGuard", version="0.1.0")
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from llmguard.adapters.openai_adapter import get_openai_adapter
+
+logger = logging.getLogger("llmguard.proxy")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    upstream = os.getenv("LLMGUARD_UPSTREAM_URL", "https://api.openai.com")
+    logger.info("LLMGuard proxy listening — upstream: %s", upstream)
+    yield
+
+
+app = FastAPI(title="LLMGuard", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "0.1.0"}
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    body = await request.json()
+    headers = dict(request.headers)
+    adapter = get_openai_adapter()
+    try:
+        result = await adapter.forward(body, headers)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return JSONResponse(content=result)
 
 
 def start():
