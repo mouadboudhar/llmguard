@@ -7,18 +7,22 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from llmguard.adapters.openai_adapter import get_openai_adapter
+from llmguard.auth.middleware import ApiKeyAuthMiddleware
+from llmguard.db import init_db
 
 logger = logging.getLogger("llmguard.proxy")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    await init_db()
     upstream = os.getenv("LLMGUARD_UPSTREAM_URL", "https://api.openai.com")
     logger.info("LLMGuard proxy listening — upstream: %s", upstream)
     yield
 
 
 app = FastAPI(title="LLMGuard", version="0.1.0", lifespan=lifespan)
+app.add_middleware(ApiKeyAuthMiddleware)
 
 
 @app.get("/health")

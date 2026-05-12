@@ -1,9 +1,6 @@
 import httpx
 import pytest
 import respx
-from httpx import ASGITransport, AsyncClient
-
-from llmguard.proxy.main import app
 
 UPSTREAM_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -21,21 +18,17 @@ FAKE_COMPLETION = {
 }
 
 
-def _client() -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
-
-
 @pytest.mark.asyncio
-async def test_health_check():
-    async with _client() as client:
-        response = await client.get("/health")
+async def test_health_check(client):
+    response = await client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_proxy_forwards_request():
+async def test_proxy_forwards_request(session_factory, client, create_key):
+    api_key, _ = await create_key("proxy-test")
     route = respx.post(UPSTREAM_URL).mock(
         return_value=httpx.Response(200, json=FAKE_COMPLETION)
     )
@@ -43,12 +36,11 @@ async def test_proxy_forwards_request():
         "model": "gpt-4o-mini",
         "messages": [{"role": "user", "content": "Hi"}],
     }
-    async with _client() as client:
-        response = await client.post(
-            "/v1/chat/completions",
-            json=request_body,
-            headers={"Authorization": "Bearer sk-customer-key"},
-        )
+    response = await client.post(
+        "/v1/chat/completions",
+        json=request_body,
+        headers={"X-LLMGuard-Key": api_key, "Authorization": "Bearer sk-customer-key"},
+    )
     assert response.status_code == 200
     assert response.json() == FAKE_COMPLETION
     assert route.called
@@ -58,14 +50,14 @@ async def test_proxy_forwards_request():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_proxy_handles_upstream_error():
+async def test_proxy_handles_upstream_error(session_factory, client, create_key):
+    api_key, _ = await create_key("proxy-err")
     respx.post(UPSTREAM_URL).mock(
         return_value=httpx.Response(429, json={"error": {"message": "rate limited"}})
     )
-    async with _client() as client:
-        response = await client.post(
-            "/v1/chat/completions",
-            json={"model": "gpt-4o-mini", "messages": []},
-            headers={"Authorization": "Bearer sk-customer-key"},
-        )
+    response = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": []},
+        headers={"X-LLMGuard-Key": api_key, "Authorization": "Bearer sk-customer-key"},
+    )
     assert response.status_code == 429
