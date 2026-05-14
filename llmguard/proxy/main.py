@@ -12,8 +12,11 @@ from llmguard.adapters.factory import get_adapter
 from llmguard.auth.middleware import ApiKeyAuthMiddleware
 from llmguard.config.repository import SQLiteEndpointRepository
 from llmguard.db import init_db
+from llmguard.guards.input_guard import InputGuard
 
 logger = logging.getLogger("llmguard.proxy")
+
+_input_guard = InputGuard()
 
 
 @asynccontextmanager
@@ -36,6 +39,25 @@ async def health():
 
 async def _forward(provider: str, upstream_url: str, request: Request) -> JSONResponse:
     body = await request.json()
+
+    user_content = " ".join(
+        m["content"]
+        for m in body.get("messages", [])
+        if m.get("role") == "user" and isinstance(m.get("content"), str)
+    )
+    guard_result = await _input_guard.scan(user_content)
+    if not guard_result.passed:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "blocked_by_guard",
+                "guard": "input_guard",
+                "reason_code": guard_result.reason_code.value,
+                "severity": guard_result.severity.value,
+                "detail": guard_result.detail,
+            },
+        )
+
     headers = dict(request.headers)
     adapter = get_adapter(provider, AdapterConfig(upstream_url=upstream_url))
     try:
