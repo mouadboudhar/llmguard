@@ -10,19 +10,28 @@ _FLAGS = re.IGNORECASE | re.MULTILINE
 PATTERNS: list[tuple[re.Pattern[str], ReasonCode, Severity, str]] = [
     # Override attempts (CRITICAL)
     (
-        re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions?", _FLAGS),
+        re.compile(
+            r"ignore\s+((?:all|your|the|my)\s+)?(previous|prior|above)\s+instructions?",
+            _FLAGS,
+        ),
         ReasonCode.OVERRIDE_ATTEMPT,
         Severity.CRITICAL,
         "ignore-previous-instructions",
     ),
     (
-        re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions?", _FLAGS),
+        re.compile(
+            r"disregard\s+((?:all|your|the|my)\s+)?(previous|prior|above)\s+instructions?",
+            _FLAGS,
+        ),
         ReasonCode.OVERRIDE_ATTEMPT,
         Severity.CRITICAL,
         "disregard-previous-instructions",
     ),
     (
-        re.compile(r"forget\s+(all\s+)?(previous|prior|above)\s+instructions?", _FLAGS),
+        re.compile(
+            r"forget\s+((?:all|your|the|my)\s+)?(previous|prior|above)\s+instructions?",
+            _FLAGS,
+        ),
         ReasonCode.OVERRIDE_ATTEMPT,
         Severity.CRITICAL,
         "forget-previous-instructions",
