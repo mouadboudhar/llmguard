@@ -9,6 +9,8 @@ PROVIDER_MAP: dict[str, type[LLMAdapter]] = {
     "anthropic": AnthropicAdapter,
     "ollama": OllamaAdapter,
     "mistral": MistralAdapter,
+    "grok": OpenAIAdapter,
+    "nvidia": OpenAIAdapter,
 }
 
 
