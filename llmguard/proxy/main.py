@@ -6,8 +6,11 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from llmguard.adapters.openai_adapter import get_openai_adapter
+from llmguard import db
+from llmguard.adapters.base import AdapterConfig
+from llmguard.adapters.factory import get_adapter
 from llmguard.auth.middleware import ApiKeyAuthMiddleware
+from llmguard.config.repository import SQLiteEndpointRepository
 from llmguard.db import init_db
 
 logger = logging.getLogger("llmguard.proxy")
@@ -17,7 +20,8 @@ logger = logging.getLogger("llmguard.proxy")
 async def lifespan(_: FastAPI):
     await init_db()
     upstream = os.getenv("LLMGUARD_UPSTREAM_URL", "https://api.openai.com")
-    logger.info("LLMGuard proxy listening — upstream: %s", upstream)
+    provider = os.getenv("LLMGUARD_PROVIDER", "openai")
+    logger.info("LLMGuard proxy listening — provider: %s, upstream: %s", provider, upstream)
     yield
 
 
@@ -30,11 +34,10 @@ async def health():
     return {"status": "ok", "version": "0.1.0"}
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+async def _forward(provider: str, upstream_url: str, request: Request) -> JSONResponse:
     body = await request.json()
     headers = dict(request.headers)
-    adapter = get_openai_adapter()
+    adapter = get_adapter(provider, AdapterConfig(upstream_url=upstream_url))
     try:
         result = await adapter.forward(body, headers)
     except HTTPException:
@@ -42,6 +45,23 @@ async def chat_completions(request: Request):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return JSONResponse(content=result)
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions_default(request: Request):
+    provider = os.getenv("LLMGUARD_PROVIDER", "openai")
+    upstream = os.getenv("LLMGUARD_UPSTREAM_URL", "https://api.openai.com")
+    return await _forward(provider, upstream, request)
+
+
+@app.post("/v1/chat/completions/{endpoint_id}")
+async def chat_completions_endpoint(endpoint_id: int, request: Request):
+    async with db.AsyncSessionLocal() as session:
+        repo = SQLiteEndpointRepository(session)
+        endpoint = await repo.get_by_id(endpoint_id)
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+    return await _forward(endpoint.provider, endpoint.upstream_url, request)
 
 
 def start():

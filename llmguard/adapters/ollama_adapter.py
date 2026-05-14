@@ -5,10 +5,8 @@ from fastapi import HTTPException
 
 from llmguard.adapters.base import AdapterConfig, LLMAdapter
 
-_FORWARD_HEADERS = ("authorization", "content-type")
 
-
-class OpenAIAdapter(LLMAdapter):
+class OllamaAdapter(LLMAdapter):
     def __init__(self, config: AdapterConfig) -> None:
         self.config = config
 
@@ -19,9 +17,10 @@ class OpenAIAdapter(LLMAdapter):
     ) -> dict[str, Any]:
         lowered = {k.lower(): v for k, v in headers.items()}
         forward_headers = {
-            name: lowered[name] for name in _FORWARD_HEADERS if name in lowered
+            "content-type": lowered.get("content-type", "application/json"),
         }
         url = f"{self.config.upstream_url.rstrip('/')}/v1/chat/completions"
+
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
             response = await client.post(url, json=request_body, headers=forward_headers)
         if response.is_error:

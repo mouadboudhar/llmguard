@@ -8,7 +8,7 @@ from llmguard.adapters.base import AdapterConfig, LLMAdapter
 _FORWARD_HEADERS = ("authorization", "content-type")
 
 
-class OpenAIAdapter(LLMAdapter):
+class MistralAdapter(LLMAdapter):
     def __init__(self, config: AdapterConfig) -> None:
         self.config = config
 
@@ -17,13 +17,15 @@ class OpenAIAdapter(LLMAdapter):
         request_body: dict[str, Any],
         headers: dict[str, Any],
     ) -> dict[str, Any]:
+        body = {k: v for k, v in request_body.items() if k != "safe_mode"}
         lowered = {k.lower(): v for k, v in headers.items()}
         forward_headers = {
             name: lowered[name] for name in _FORWARD_HEADERS if name in lowered
         }
         url = f"{self.config.upstream_url.rstrip('/')}/v1/chat/completions"
+
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as client:
-            response = await client.post(url, json=request_body, headers=forward_headers)
+            response = await client.post(url, json=body, headers=forward_headers)
         if response.is_error:
             try:
                 detail = response.json()

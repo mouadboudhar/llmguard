@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from llmguard.auth.models import Base
+from llmguard.config import models as _config_models  # noqa: F401  (register Endpoint on Base.metadata)
 
 
 def _database_url() -> str:
