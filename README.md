@@ -11,6 +11,21 @@ dashboard, and runs entirely inside your own infrastructure.
 
 docker compose up
 
+## Language Model Setup
+
+The Input Guard detects non-English prompts and translates them
+locally before running its pattern checks. After installation,
+download the translation models:
+
+    python scripts/download_models.py
+
+Supported languages: English, French, Spanish, Arabic, German,
+Portuguese, Italian, Dutch, Russian, Chinese, Japanese, Turkish.
+
+Models are downloaded once and cached locally — approximately
+100MB per language pair. No internet connection is required
+after the initial download.
+
 ## Guards
 
 - **Input Guard** — blocks prompt injection before forwarding

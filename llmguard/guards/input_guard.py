@@ -1,9 +1,12 @@
+import asyncio
 import base64
 import binascii
+import os
 import re
 import unicodedata
 
 from llmguard.guards.base import Guard, GuardResult, ReasonCode, Severity
+from llmguard.guards.translator import to_english
 
 _FLAGS = re.IGNORECASE | re.MULTILINE
 
@@ -129,6 +132,11 @@ IMPERATIVE_VERBS: frozenset[str] = frozenset({
 _DENSITY_THRESHOLD = 0.15
 _DENSITY_MIN_WORDS = 8
 
+# Translation pre-processing budget, in seconds. The translated copy is used
+# for pattern matching only; the original input is always forwarded untouched.
+# Override per deployment with the LLMGUARD_TRANSLATE_TIMEOUT env var.
+_DEFAULT_TRANSLATE_TIMEOUT = 0.2
+
 _BASE64_CANDIDATE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
 _WORD = re.compile(r"\b[\w']+\b")
 
@@ -138,27 +146,61 @@ def _normalise(content: str) -> str:
     return "".join(_CONFUSABLES.get(ch, ch) for ch in nfkc)
 
 
+def _translation_suffix(detected_lang: str | None, timed_out: bool) -> str:
+    """Annotation appended to a blocked result's detail line."""
+    suffix = ""
+    if detected_lang is not None:
+        suffix += f" (translated from: {detected_lang})"
+    if timed_out:
+        suffix += " (TRANSLATION_TIMEOUT)"
+    return suffix
+
+
 class InputGuard(Guard):
     async def scan(self, content: str) -> GuardResult:
         normalised = _normalise(content)
 
+        # Translate non-English input to English so the deterministic patterns
+        # below can match it. The translated copy is used for matching only;
+        # the proxy still forwards the original input to the LLM. Fail open:
+        # on timeout or any translation error, fall back to the original text.
+        timeout = float(
+            os.environ.get("LLMGUARD_TRANSLATE_TIMEOUT", _DEFAULT_TRANSLATE_TIMEOUT)
+        )
+        translation_timed_out = False
+        try:
+            english_content, detected_lang = await asyncio.wait_for(
+                to_english(normalised), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            english_content = normalised
+            detected_lang = None
+            translation_timed_out = True
+
         for pattern, reason, severity, desc in PATTERNS:
-            match = pattern.search(normalised)
+            match = pattern.search(english_content)
             if match:
                 return GuardResult(
                     passed=False,
                     reason_code=reason,
                     severity=severity,
-                    detail=f"Matched pattern: {desc}",
+                    detail=f"Matched pattern: {desc}"
+                    + _translation_suffix(detected_lang, translation_timed_out),
                     matched_pattern=match.group(0),
                 )
 
-        decoded_hit = _scan_base64_payloads(normalised)
+        decoded_hit = _scan_base64_payloads(english_content)
         if decoded_hit is not None:
+            decoded_hit.detail += _translation_suffix(
+                detected_lang, translation_timed_out
+            )
             return decoded_hit
 
-        density_hit = _scan_density(normalised)
+        density_hit = _scan_density(english_content)
         if density_hit is not None:
+            density_hit.detail += _translation_suffix(
+                detected_lang, translation_timed_out
+            )
             return density_hit
 
         return GuardResult(
