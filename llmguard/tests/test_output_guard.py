@@ -70,6 +70,14 @@ async def test_credit_card_invalid_luhn_not_flagged():
 
 
 @pytest.mark.asyncio
+async def test_credit_card_with_spaces_detected():
+    result = await OutputGuard().scan("Card on file: 5555 5555 5555 4444")
+    assert result.passed is False
+    assert result.reason_code == ReasonCode.PII_DETECTED
+    assert result.matched_pattern == "CREDIT_CARD"
+
+
+@pytest.mark.asyncio
 async def test_email_detected():
     result = await OutputGuard().scan("Contact me at alice.smith@example.com.")
     assert result.passed is False
@@ -238,6 +246,55 @@ def test_redaction_preserves_clean_text():
     redacted, names = OutputGuard().redact(text)
     assert redacted == text
     assert names == []
+
+
+@pytest.mark.asyncio
+async def test_unix_timestamp_not_flagged():
+    result = await OutputGuard().scan('{"iat": 1516239022, "exp": 1516325422}')
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_phone_with_separators_detected():
+    result = await OutputGuard().scan("Call me at (555) 123-4567")
+    assert result.passed is False
+    assert result.reason_code == ReasonCode.PII_DETECTED
+
+
+@pytest.mark.asyncio
+async def test_phone_without_separators_not_flagged():
+    result = await OutputGuard().scan("user id is 5551234567")
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_postgres_short_form_detected():
+    result = await OutputGuard().scan("postgres://user:pass@localhost:5432/db")
+    assert result.passed is False
+    assert result.reason_code == ReasonCode.SECRET_DETECTED
+    assert result.matched_pattern == "POSTGRES_URL"
+
+
+RSA_KEY_BLOCK = (
+    "-----BEGIN RSA PRIVATE KEY-----\n"
+    "MIIEowIBAAKCAQEA7vXq9Wr3TkBp2mZ8qNxL6sD1oF4aH7cJ0eG3iK5mP8rT1vYz\n"
+    "Z4bD6fH9jL2nQ5sU8wX1zA3cE6gI9kM2oR5tV7xZ0bD4fH7jL1nP4rT8vX2zB5dG\n"
+    "8hK1mO4qS7uW0yB3dF6hJ9lN2pR5tW8xA1cE4gI7kM0oQ3sU6wY9aD2fH5jL8nP0\n"
+    "-----END RSA PRIVATE KEY-----"
+)
+
+
+def test_rsa_full_block_redacted():
+    redacted, names = OutputGuard().redact(RSA_KEY_BLOCK)
+    assert "END RSA PRIVATE KEY" not in redacted
+    assert "[REDACTED:RSA_PRIVATE_KEY]" in redacted
+    assert names == ["RSA_PRIVATE_KEY"]
+
+
+def test_pem_base64_body_not_double_flagged():
+    matches = OutputGuard().find_all_matches(RSA_KEY_BLOCK)
+    names = [m["name"] for m in matches]
+    assert names == ["RSA_PRIVATE_KEY"]
 
 
 # ---------- integration tests ----------

@@ -104,10 +104,10 @@ PATTERNS: list[PatternDef] = [
                re.compile(r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"),
                _PII, Severity.CRITICAL),
     PatternDef("PHONE_US",
-               re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+               re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b"),
                _PII, Severity.LOW),
     PatternDef("PHONE_INTL",
-               re.compile(r"\+(?:[0-9] ?){6,14}[0-9]\b"),
+               re.compile(r"\+(?:[0-9]{1,3}[-.\s]){2,}[0-9]{4,}\b"),
                _PII, Severity.LOW),
     PatternDef("IBAN",
                re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7}(?:[A-Z0-9]?){0,16}\b"),
@@ -249,10 +249,10 @@ PATTERNS: list[PatternDef] = [
 
     # --- Secrets: DB connection strings ---
     PatternDef("POSTGRES_URL",
-               re.compile(r"postgresql(?:s)?://[^:]+:[^@]+@[^/]+/\S+"),
+               re.compile(r"postgres(?:ql)?(?:s)?://[^:]+:[^@]+@[^/\s]+"),
                _SEC, Severity.CRITICAL),
     PatternDef("MYSQL_URL",
-               re.compile(r"mysql(?:2)?://[^:]+:[^@]+@[^/]+/\S+"),
+               re.compile(r"mysql(?:2)?://[^:]+:[^@]+@[^/\s]+"),
                _SEC, Severity.CRITICAL),
     PatternDef("MONGODB_URL",
                re.compile(r"mongodb(?:\+srv)?://[^:]+:[^@]+@\S+"),
@@ -283,24 +283,44 @@ PATTERNS: list[PatternDef] = [
                re.compile(r"\bhf_[A-Za-z0-9]{37}\b"),
                _SEC, Severity.HIGH),
 
-    # --- Cryptographic material (PEM block headers) ---
+    # --- Cryptographic material (full PEM blocks: BEGIN through END) ---
     PatternDef("RSA_PRIVATE_KEY",
-               re.compile(r"-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----"),
+               re.compile(
+                   r"-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----[\s\S]+?"
+                   r"-----END\s+RSA\s+PRIVATE\s+KEY-----",
+                   re.DOTALL,
+               ),
                _SEC, Severity.CRITICAL),
     PatternDef("EC_PRIVATE_KEY",
-               re.compile(r"-----BEGIN\s+EC\s+PRIVATE\s+KEY-----"),
+               re.compile(
+                   r"-----BEGIN\s+EC\s+PRIVATE\s+KEY-----[\s\S]+?"
+                   r"-----END\s+EC\s+PRIVATE\s+KEY-----",
+                   re.DOTALL,
+               ),
                _SEC, Severity.CRITICAL),
     PatternDef("PRIVATE_KEY",
-               re.compile(r"-----BEGIN\s+PRIVATE\s+KEY-----"),
+               re.compile(
+                   r"-----BEGIN\s+PRIVATE\s+KEY-----[\s\S]+?"
+                   r"-----END\s+PRIVATE\s+KEY-----",
+                   re.DOTALL,
+               ),
                _SEC, Severity.CRITICAL),
     PatternDef("PGP_PRIVATE_KEY",
-               re.compile(r"-----BEGIN\s+PGP\s+PRIVATE\s+KEY\s+BLOCK-----"),
+               re.compile(
+                   r"-----BEGIN\s+PGP\s+PRIVATE\s+KEY\s+BLOCK-----[\s\S]+?"
+                   r"-----END\s+PGP\s+PRIVATE\s+KEY\s+BLOCK-----",
+                   re.DOTALL,
+               ),
                _SEC, Severity.CRITICAL),
     PatternDef("CERTIFICATE",
                re.compile(r"-----BEGIN\s+CERTIFICATE-----"),
                _SEC, Severity.CRITICAL),
     PatternDef("SSH_PRIVATE_KEY",
-               re.compile(r"-----BEGIN\s+OPENSSH\s+PRIVATE\s+KEY-----"),
+               re.compile(
+                   r"-----BEGIN\s+OPENSSH\s+PRIVATE\s+KEY-----[\s\S]+?"
+                   r"-----END\s+OPENSSH\s+PRIVATE\s+KEY-----",
+                   re.DOTALL,
+               ),
                _SEC, Severity.CRITICAL),
 
     # --- JWT (HIGH — not always a secret, but may carry sensitive claims) ---
@@ -314,6 +334,8 @@ HIGH_ENTROPY_NAME = "HIGH_ENTROPY_STRING"
 
 _HIGH_ENTROPY_CANDIDATE = re.compile(r"\S{" + str(HIGH_ENTROPY_MIN_LEN) + r",}")
 _URL_PREFIX = re.compile(r"^https?://", re.IGNORECASE)
+_PEM_BLOCK = re.compile(r"-----BEGIN[ A-Z]+-----[\s\S]+?-----END[ A-Z]+-----")
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/=]+")
 
 
 def _has_context(content: str, start: int, end: int, keywords: tuple[str, ...]) -> bool:
@@ -324,6 +346,7 @@ def _has_context(content: str, start: int, end: int, keywords: tuple[str, ...]) 
 
 
 def _find_high_entropy(content: str) -> list[dict]:
+    pem_spans = [(m.start(), m.end()) for m in _PEM_BLOCK.finditer(content)]
     out: list[dict] = []
     for m in _HIGH_ENTROPY_CANDIDATE.finditer(content):
         s = m.group(0)
@@ -332,6 +355,14 @@ def _find_high_entropy(content: str) -> list[dict]:
         if "/" in s or "\\" in s:
             continue
         if len(set(s)) <= 2:
+            continue
+        # Base64 body lines inside a PEM block are already covered by the
+        # full PEM block match — don't double-flag them as high entropy.
+        if (
+            any(ps <= m.start() and m.end() <= pe for ps, pe in pem_spans)
+            and _BASE64_RUN.fullmatch(s)
+            and len(s) % 4 == 0
+        ):
             continue
         if calculate_entropy(s) <= HIGH_ENTROPY_THRESHOLD:
             continue

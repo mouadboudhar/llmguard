@@ -19,10 +19,17 @@ import os
 import sys
 
 import httpx
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.text import Text
+from rich.live import Live
+
+console = Console()
 
 
 def _usage_and_exit() -> None:
-    print(__doc__)
+    console.print(__doc__, style="dim")
     sys.exit(2)
 
 
@@ -43,39 +50,45 @@ def main() -> int:
     }
 
     history: list[dict[str, str]] = []
-    print(f"LLMGuard chat → {url}  model={model}")
-    print("Type /quit to exit, /reset to clear history, /history to print it.\n")
+    
+    console.rule("[bold blue]LLMGuard Chat[/bold blue]")
+    console.print(f"[dim]URL:[/dim] [cyan]{url}[/cyan] [dim]Model:[/dim] [green]{model}[/green]")
+    console.print("Commands: [bold]/reset[/bold], [bold]/history[/bold], [bold]/quit[/bold]\n")
 
     with httpx.Client(timeout=60.0) as client:
         while True:
             try:
-                user_input = input("you> ").strip()
+                user_input = console.input("[bold magenta]you>[/bold magenta] ").strip()
             except (EOFError, KeyboardInterrupt):
-                print()
+                console.print("\n[yellow]Goodbye![/yellow]")
                 return 0
 
             if not user_input:
                 continue
             if user_input in {"/quit", "/exit"}:
+                console.print("[yellow]Goodbye![/yellow]")
                 return 0
             if user_input == "/reset":
                 history.clear()
-                print("(history cleared)\n")
+                console.print("[bold yellow](history cleared)[/bold yellow]\n")
                 continue
             if user_input == "/history":
-                for m in history:
-                    print(f"  {m['role']}: {m['content']}")
-                print()
+                console.print(Panel(
+                    "\n".join([f"[bold]{m['role']}:[/bold] {m['content']}" for m in history]),
+                    title="Conversation History",
+                    border_style="blue"
+                ))
                 continue
 
             history.append({"role": "user", "content": user_input})
             payload = {"model": model, "messages": history}
 
             try:
-                response = client.post(url, json=payload, headers=headers)
+                with console.status("[bold green]Thinking..."):
+                    response = client.post(url, json=payload, headers=headers)
             except httpx.HTTPError as exc:
                 history.pop()
-                print(f"[network error] {exc}\n")
+                console.print(f"[bold red][network error][/bold red] {exc}\n")
                 continue
 
             if response.status_code == 403:
@@ -83,21 +96,23 @@ def main() -> int:
                 try:
                     body = response.json()
                 except ValueError:
-                    print(f"[403] {response.text}\n")
+                    console.print(f"[bold red][403][/bold red] {response.text}\n")
                     continue
                 if body.get("error") == "blocked_by_guard":
-                    print(
-                        f"[BLOCKED by {body.get('guard')}] "
-                        f"{body.get('reason_code')} ({body.get('severity')}): "
-                        f"{body.get('detail')}\n"
-                    )
+                    console.print(Panel(
+                        f"[bold red]BLOCKED by {body.get('guard')}[/bold red]\n"
+                        f"[bold]Reason:[/bold] {body.get('reason_code')} ({body.get('severity')})\n"
+                        f"[bold]Detail:[/bold] {body.get('detail')}",
+                        border_style="red",
+                        title="Guard Action"
+                    ))
                 else:
-                    print(f"[403] {body}\n")
+                    console.print(f"[bold red][403][/bold red] {body}\n")
                 continue
 
             if response.status_code >= 400:
                 history.pop()
-                print(f"[{response.status_code}] {response.text}\n")
+                console.print(f"[bold red][{response.status_code}][/bold red] {response.text}\n")
                 continue
 
             try:
@@ -105,11 +120,12 @@ def main() -> int:
                 reply = data["choices"][0]["message"]["content"]
             except (ValueError, KeyError, IndexError) as exc:
                 history.pop()
-                print(f"[bad response shape: {exc}] {response.text}\n")
+                console.print(f"[bold red][bad response shape: {exc}][/bold red] {response.text}\n")
                 continue
 
             history.append({"role": "assistant", "content": reply})
-            print(f"bot> {reply}\n")
+            console.print(Panel(Markdown(reply), title="[bold green]bot[/bold green]", border_style="green"))
+            console.print()
 
 
 if __name__ == "__main__":
