@@ -134,8 +134,10 @@ _DENSITY_MIN_WORDS = 8
 
 # Translation pre-processing budget, in seconds. The translated copy is used
 # for pattern matching only; the original input is always forwarded untouched.
-# Override per deployment with the LLMGUARD_TRANSLATE_TIMEOUT env var.
-_DEFAULT_TRANSLATE_TIMEOUT = 0.2
+# 1.0s covers steady-state translation (~0.4s with several models resident);
+# cold ~1.5s model loads are avoided by warming up at proxy startup. Override
+# per deployment with the LLMGUARD_TRANSLATE_TIMEOUT env var.
+_DEFAULT_TRANSLATE_TIMEOUT = 1.0
 
 _BASE64_CANDIDATE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
 _WORD = re.compile(r"\b[\w']+\b")

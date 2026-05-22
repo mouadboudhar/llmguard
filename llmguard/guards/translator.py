@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
+from collections import Counter
 from functools import lru_cache
 
 import argostranslate.package
 import argostranslate.translate
 from lingua import Language, LanguageDetectorBuilder
+
+logger = logging.getLogger(__name__)
 
 # Languages the Input Guard understands. Detection is restricted to this set so
 # the detector stays fast and predictable; anything outside it is treated as
@@ -33,32 +38,74 @@ _detector = (
     .build()
 )
 
+# Translation is skipped when language detection is less certain than this; a
+# low-confidence guess is more likely to mistranslate a clean prompt into
+# something that trips the override patterns.
+_MIN_CONFIDENCE = 0.8
+
+# argostranslate models occasionally emit degenerate output: a token repeated
+# hundreds of times, or "@@" subword-merge artefacts. Such output is discarded
+# and the guard matches the original text instead.
+_CORRUPTION_RE = re.compile(r"^(\w+@@\s*){3,}")
+_MAX_WORD_REPEATS = 5
+_MAX_LENGTH_RATIO = 3
+
+
+def _looks_corrupted(original: str, translated: str) -> bool:
+    """Return True when ``translated`` shows signs of a degenerate model run."""
+    if len(translated) > _MAX_LENGTH_RATIO * len(original):
+        return True
+    if _CORRUPTION_RE.match(translated):
+        return True
+    words = translated.split()
+    if words and max(Counter(words).values()) > _MAX_WORD_REPEATS:
+        return True
+    return False
+
 
 @lru_cache(maxsize=1000)
 def _cached_translate(text: str, from_code: str) -> str:
     """Translate ``text`` into English, returning it unchanged on any failure.
 
-    Fail open: if the language model is missing or argostranslate raises, the
-    caller runs its English patterns against the original text rather than
-    blocking. Results (including fail-open passthroughs) are cached.
+    Fail open: if the language model is missing, argostranslate raises, or the
+    output fails the quality check, the caller runs its English patterns
+    against the original text rather than blocking. Results (including
+    fail-open passthroughs) are cached.
     """
     try:
-        return argostranslate.translate.translate(text, from_code, "en")
+        translated = argostranslate.translate.translate(text, from_code, "en")
     except Exception:
         return text
+    if not translated or _looks_corrupted(text, translated):
+        logger.warning("Translation quality check failed for %s", from_code)
+        return text
+    return translated
 
 
 async def to_english(text: str) -> tuple[str, str | None]:
     """Return ``text`` as English plus the detected source language code.
 
     The second element is the ISO 639-1 code the text was translated from, or
-    ``None`` when the input is already English, undetectable, or translation
-    produced no usable change. The translation runs in a worker thread so the
-    event loop stays responsive and an ``asyncio.wait_for`` timeout around this
-    coroutine can actually fire.
+    ``None`` when the input is already English, undetectable, detected with
+    low confidence, or translated to no usable change. The translation runs in
+    a worker thread so the event loop stays responsive and an
+    ``asyncio.wait_for`` timeout around this coroutine can actually fire.
     """
     detected = _detector.detect_language_of(text)
     if detected is None or detected == Language.ENGLISH:
+        return (text, None)
+
+    # lingua exposes no detect_*_with_rules() API; the confidence for the
+    # detected language is read separately. Below the threshold the guess is
+    # too shaky to risk a mistranslation, so the original text is matched.
+    confidence = _detector.compute_language_confidence(text, detected)
+    if confidence < _MIN_CONFIDENCE:
+        logger.warning(
+            "Language confidence %.2f for %s below %.2f; skipping translation",
+            confidence,
+            detected.name,
+            _MIN_CONFIDENCE,
+        )
         return (text, None)
 
     from_code = detected.iso_code_639_1.name.lower()
@@ -91,3 +138,22 @@ def ensure_language_models_installed(from_code: str) -> None:
     if package is None:
         return
     argostranslate.package.install_from_path(package.download())
+
+
+def warm_up() -> None:
+    """Load every installed ``<lang> -> en`` model into memory.
+
+    Call once at process start (the proxy does this in its lifespan hook).
+    A cold argostranslate model load takes ~1.5s — long enough to lose the
+    Input Guard's per-request translation timeout and fail open, letting a
+    non-English injection through unscanned. Warming here moves that cost to
+    startup so every request hits an already-loaded model (~55ms).
+    """
+    for package in argostranslate.package.get_installed_packages():
+        if package.to_code != "en" or package.from_code == "en":
+            continue
+        try:
+            argostranslate.translate.translate("warm up", package.from_code, "en")
+        except Exception:
+            logger.warning("Warm-up failed for %s -> en", package.from_code)
+    logger.info("Translation models warmed up")

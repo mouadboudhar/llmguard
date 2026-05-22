@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from llmguard.config.repository import SQLiteEndpointRepository
 from llmguard.db import init_db
 from llmguard.guards.input_guard import InputGuard
 from llmguard.guards.output_guard import OutputGuard
+from llmguard.guards.translator import warm_up
 
 logger = logging.getLogger("llmguard.proxy")
 
@@ -26,6 +28,11 @@ async def lifespan(_: FastAPI):
     await init_db()
     upstream = os.getenv("LLMGUARD_UPSTREAM_URL", "https://api.openai.com")
     provider = os.getenv("LLMGUARD_PROVIDER", "openai")
+    # Load translation models before serving traffic. A cold model load takes
+    # ~1.5s — long enough to lose the input guard's per-request translation
+    # timeout and fail open, letting a non-English injection through unscanned.
+    logger.info("Warming up translation models...")
+    await asyncio.to_thread(warm_up)
     logger.info("LLMGuard proxy listening — provider: %s, upstream: %s", provider, upstream)
     yield
 
