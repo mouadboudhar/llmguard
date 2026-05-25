@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from llmguard.audit import models as _audit_models  # noqa: F401  (register AuditEvent on Base.metadata)
 from llmguard.auth.models import Base
 from llmguard.config import models as _config_models  # noqa: F401  (register Endpoint on Base.metadata)
 from llmguard.ratelimit import bucket as _ratelimit_models  # noqa: F401  (register RateLimitBucket on Base.metadata)

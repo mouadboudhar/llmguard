@@ -2,6 +2,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from llmguard.audit.emitter import emit
+from llmguard.audit.models import EventType
 from llmguard.auth.models import ApiKey
 from llmguard.ratelimit.bucket import (
     WINDOWS,
@@ -18,7 +20,7 @@ async def check_rate_limits(
     key_record: ApiKey,
     session: AsyncSession,
 ) -> Response | None:
-    del request  # part of the documented signature; not needed here
+    request_id = getattr(request.state, "request_id", None)
     limits = effective_limits(key_record)
     for window in WINDOWS:
         allowed, _ = await _bucket.check_and_increment(
@@ -26,6 +28,13 @@ async def check_rate_limits(
         )
         if not allowed:
             retry_after = _resets_in(window)
+            await emit(
+                EventType.RATE_LIMIT_EXCEEDED,
+                severity="MEDIUM",
+                key_id=key_record.id,
+                detail={"window": window, "limit": limits[window]},
+                request_id=request_id,
+            )
             return JSONResponse(
                 status_code=429,
                 content={
@@ -36,4 +45,9 @@ async def check_rate_limits(
                 },
                 headers={"Retry-After": str(retry_after)},
             )
+    await emit(
+        EventType.RATE_LIMIT_PASSED,
+        key_id=key_record.id,
+        request_id=request_id,
+    )
     return None

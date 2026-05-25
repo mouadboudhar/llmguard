@@ -4,6 +4,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 from llmguard import db
+from llmguard.audit.emitter import emit
+from llmguard.audit.models import EventType
 from llmguard.auth.keys import hash_key
 from llmguard.auth.repository import SQLiteKeyRepository
 
@@ -19,8 +21,15 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if request.method == "GET" and request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
 
+        request_id = getattr(request.state, "request_id", None)
         provided = request.headers.get("X-LLMGuard-Key")
         if not provided:
+            await emit(
+                EventType.AUTH_FAILED,
+                severity="HIGH",
+                detail={"reason": "missing_key"},
+                request_id=request_id,
+            )
             return JSONResponse(
                 status_code=401, content={"detail": "Missing X-LLMGuard-Key header"}
             )
@@ -30,6 +39,12 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             repo = SQLiteKeyRepository(session)
             api_key = await repo.get_by_hash(key_hash)
             if api_key is None:
+                await emit(
+                    EventType.AUTH_FAILED,
+                    severity="HIGH",
+                    detail={"reason": "invalid_key"},
+                    request_id=request_id,
+                )
                 return JSONResponse(
                     status_code=401, content={"detail": "Invalid or revoked API key"}
                 )
@@ -39,4 +54,9 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         request.state.key_id = key_id
         request.state.key_record = api_key
+        await emit(
+            EventType.AUTH_PASSED,
+            key_id=key_id,
+            request_id=request_id,
+        )
         return await call_next(request)

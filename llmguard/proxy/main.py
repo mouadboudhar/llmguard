@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -10,6 +11,13 @@ from fastapi.responses import JSONResponse
 from llmguard import db
 from llmguard.adapters.base import AdapterConfig
 from llmguard.adapters.factory import get_adapter
+from llmguard.audit.api import router as audit_api_router
+from llmguard.audit.broadcaster import broadcaster
+from llmguard.audit.emitter import emit, init_emitter
+from llmguard.audit.models import EventType
+from llmguard.audit.repository import SQLiteAuditRepository
+from llmguard.audit.request_context import RequestContextMiddleware
+from llmguard.audit.ws import router as ws_router
 from llmguard.auth.middleware import ApiKeyAuthMiddleware
 from llmguard.config.repository import SQLiteEndpointRepository
 from llmguard.db import init_db
@@ -31,6 +39,12 @@ async def lifespan(_: FastAPI):
     await init_db()
     upstream = os.getenv("LLMGUARD_UPSTREAM_URL", "https://api.openai.com")
     provider = os.getenv("LLMGUARD_PROVIDER", "openai")
+    audit_repo = SQLiteAuditRepository(db.AsyncSessionLocal)
+    init_emitter(audit_repo, broadcaster)
+    if not os.getenv("LLMGUARD_DASHBOARD_TOKEN"):
+        logger.warning(
+            "LLMGUARD_DASHBOARD_TOKEN not set — dashboard WS and audit API will reject all clients"
+        )
     # Load translation models before serving traffic. A cold model load takes
     # ~1.5s — long enough to lose the input guard's per-request translation
     # timeout and fail open, letting a non-English injection through unscanned.
@@ -42,6 +56,9 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="LLMGuard", version="0.1.0", lifespan=lifespan)
 app.add_middleware(ApiKeyAuthMiddleware)
+app.add_middleware(RequestContextMiddleware)
+app.include_router(ws_router)
+app.include_router(audit_api_router)
 
 
 @app.get("/health")
@@ -49,8 +66,15 @@ async def health():
     return {"status": "ok", "version": "0.1.0"}
 
 
-async def _forward(provider: str, upstream_url: str, request: Request) -> JSONResponse:
+async def _forward(
+    provider: str,
+    upstream_url: str,
+    request: Request,
+    endpoint_id: int | None = None,
+) -> JSONResponse:
     body = await request.json()
+    request_id = getattr(request.state, "request_id", None)
+    key_id = getattr(request.state, "key_id", None)
 
     key_record = getattr(request.state, "key_record", None)
     if key_record is not None:
@@ -68,6 +92,15 @@ async def _forward(provider: str, upstream_url: str, request: Request) -> JSONRe
         )
         for signal in signals:
             logger.warning("abuse signal %s for key %s", signal, key_record.id)
+        if signals:
+            await emit(
+                EventType.ABUSE_SIGNAL,
+                severity="MEDIUM",
+                key_id=key_record.id,
+                endpoint_id=endpoint_id,
+                detail={"signals": signals},
+                request_id=request_id,
+            )
 
     user_content = " ".join(
         m["content"]
@@ -76,6 +109,18 @@ async def _forward(provider: str, upstream_url: str, request: Request) -> JSONRe
     )
     guard_result = await _input_guard.scan(user_content)
     if not guard_result.passed:
+        await emit(
+            EventType.INPUT_GUARD_BLOCKED,
+            severity="HIGH",
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            detail={
+                "reason_code": guard_result.reason_code.value,
+                "severity": guard_result.severity.value,
+                "detail": guard_result.detail,
+            },
+            request_id=request_id,
+        )
         return JSONResponse(
             status_code=403,
             content={
@@ -86,16 +131,50 @@ async def _forward(provider: str, upstream_url: str, request: Request) -> JSONRe
                 "detail": guard_result.detail,
             },
         )
+    await emit(
+        EventType.INPUT_GUARD_PASSED,
+        key_id=key_id,
+        endpoint_id=endpoint_id,
+        request_id=request_id,
+    )
 
     headers = dict(request.headers)
     adapter = get_adapter(provider, AdapterConfig(upstream_url=upstream_url))
+    upstream_start = time.monotonic()
     try:
         result = await adapter.forward(body, headers)
-    except HTTPException:
+    except HTTPException as exc:
+        await emit(
+            EventType.UPSTREAM_ERROR,
+            severity="HIGH",
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            detail={"status": exc.status_code},
+            request_id=request_id,
+        )
         raise
     except Exception as exc:  # noqa: BLE001
+        await emit(
+            EventType.UPSTREAM_ERROR,
+            severity="HIGH",
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            detail={"status": 500, "error": str(exc)},
+            request_id=request_id,
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return await _apply_output_guard(result)
+    upstream_latency = int((time.monotonic() - upstream_start) * 1000)
+    await emit(
+        EventType.UPSTREAM_REQUEST,
+        key_id=key_id,
+        endpoint_id=endpoint_id,
+        detail={"provider": provider, "model": body.get("model")},
+        latency_ms=upstream_latency,
+        request_id=request_id,
+    )
+    return await _apply_output_guard(
+        result, key_id=key_id, endpoint_id=endpoint_id, request_id=request_id
+    )
 
 
 def _extract_assistant_content(result: dict) -> str | None:
@@ -106,15 +185,38 @@ def _extract_assistant_content(result: dict) -> str | None:
     return content if isinstance(content, str) else None
 
 
-async def _apply_output_guard(result: dict) -> JSONResponse:
+async def _apply_output_guard(
+    result: dict,
+    key_id: int | None = None,
+    endpoint_id: int | None = None,
+    request_id: str | None = None,
+) -> JSONResponse:
     action = os.getenv("LLMGUARD_OUTPUT_GUARD_ACTION", "redact").lower()
     content = _extract_assistant_content(result)
     if not content:
+        await emit(
+            EventType.OUTPUT_GUARD_PASSED,
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            request_id=request_id,
+        )
         return JSONResponse(content=result)
 
     if action == "block":
         scan = await _output_guard.scan(content)
         if not scan.passed:
+            await emit(
+                EventType.OUTPUT_GUARD_BLOCKED,
+                severity="HIGH",
+                key_id=key_id,
+                endpoint_id=endpoint_id,
+                detail={
+                    "reason_code": scan.reason_code.value,
+                    "severity": scan.severity.value,
+                    "detail": scan.detail,
+                },
+                request_id=request_id,
+            )
             return JSONResponse(
                 status_code=403,
                 content={
@@ -125,6 +227,12 @@ async def _apply_output_guard(result: dict) -> JSONResponse:
                     "detail": scan.detail,
                 },
             )
+        await emit(
+            EventType.OUTPUT_GUARD_PASSED,
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            request_id=request_id,
+        )
         return JSONResponse(content=result)
 
     if action == "log_only":
@@ -136,16 +244,36 @@ async def _apply_output_guard(result: dict) -> JSONResponse:
                 scan.severity.value,
                 scan.detail,
             )
+        await emit(
+            EventType.OUTPUT_GUARD_PASSED,
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            request_id=request_id,
+        )
         return JSONResponse(content=result)
 
     # default action: redact
     redacted, names = _output_guard.redact(content)
     if names:
         result["choices"][0]["message"]["content"] = redacted
+        await emit(
+            EventType.OUTPUT_GUARD_REDACTED,
+            severity="MEDIUM",
+            key_id=key_id,
+            endpoint_id=endpoint_id,
+            detail={"redacted_types": names},
+            request_id=request_id,
+        )
         return JSONResponse(
             content=result,
             headers={"X-LLMGuard-Redacted": ",".join(names)},
         )
+    await emit(
+        EventType.OUTPUT_GUARD_PASSED,
+        key_id=key_id,
+        endpoint_id=endpoint_id,
+        request_id=request_id,
+    )
     return JSONResponse(content=result)
 
 
@@ -163,7 +291,9 @@ async def chat_completions_endpoint(endpoint_id: int, request: Request):
         endpoint = await repo.get_by_id(endpoint_id)
     if endpoint is None:
         raise HTTPException(status_code=404, detail="Endpoint not found")
-    return await _forward(endpoint.provider, endpoint.upstream_url, request)
+    return await _forward(
+        endpoint.provider, endpoint.upstream_url, request, endpoint_id=endpoint_id
+    )
 
 
 def start():
