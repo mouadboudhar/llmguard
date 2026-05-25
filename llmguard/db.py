@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
 
 from llmguard.auth.models import Base
 from llmguard.config import models as _config_models  # noqa: F401  (register Endpoint on Base.metadata)
+from llmguard.ratelimit import bucket as _ratelimit_models  # noqa: F401  (register RateLimitBucket on Base.metadata)
 
 
 def _database_url() -> str:
@@ -32,6 +33,17 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_api_keys_rate_limits(conn)
+
+
+async def _migrate_api_keys_rate_limits(conn) -> None:
+    # create_all doesn't ALTER existing tables; backfill rate-limit columns
+    # on databases created before Stage 10.
+    result = await conn.execute(text("PRAGMA table_info(api_keys)"))
+    existing = {row[1] for row in result.fetchall()}
+    for col in ("rate_limit_rpm", "rate_limit_rph", "rate_limit_rpd"):
+        if col not in existing:
+            await conn.execute(text(f"ALTER TABLE api_keys ADD COLUMN {col} INTEGER"))
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

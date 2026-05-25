@@ -16,11 +16,14 @@ from llmguard.db import init_db
 from llmguard.guards.input_guard import InputGuard
 from llmguard.guards.output_guard import OutputGuard
 from llmguard.guards.translator import warm_up
+from llmguard.ratelimit.abuse import AbuseDetector
+from llmguard.ratelimit.middleware import check_rate_limits
 
 logger = logging.getLogger("llmguard.proxy")
 
 _input_guard = InputGuard()
 _output_guard = OutputGuard()
+_abuse_detector = AbuseDetector()
 
 
 @asynccontextmanager
@@ -48,6 +51,23 @@ async def health():
 
 async def _forward(provider: str, upstream_url: str, request: Request) -> JSONResponse:
     body = await request.json()
+
+    key_record = getattr(request.state, "key_record", None)
+    if key_record is not None:
+        async with db.AsyncSessionLocal() as session:
+            rate_response = await check_rate_limits(request, key_record, session)
+            await session.commit()
+        if rate_response is not None:
+            return rate_response
+
+        _abuse_detector.record_request(key_record.id)
+        signals = _abuse_detector.check(
+            key_record.id,
+            list(_abuse_detector.history(key_record.id)),
+            body,
+        )
+        for signal in signals:
+            logger.warning("abuse signal %s for key %s", signal, key_record.id)
 
     user_content = " ".join(
         m["content"]

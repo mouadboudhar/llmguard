@@ -5,9 +5,11 @@ from rich.console import Console
 from rich.table import Table
 
 from llmguard.auth.keys import generate_api_key, hash_key
+from llmguard.auth.models import ApiKey
 from llmguard.auth.repository import SQLiteKeyRepository
 from llmguard.config.repository import SQLiteEndpointRepository
 from llmguard.db import AsyncSessionLocal, init_db
+from llmguard.ratelimit.bucket import TokenBucket, effective_limits
 
 app = typer.Typer(help="LLMGuard administration CLI.")
 keys_app = typer.Typer(help="Manage LLMGuard API keys.")
@@ -89,6 +91,88 @@ def keys_revoke(
     else:
         console.print(f"[red]Key ID {key_id} not found or already revoked.[/red]")
         raise typer.Exit(code=1)
+
+
+async def _set_key_limits(
+    key_id: int,
+    rpm: int | None,
+    rph: int | None,
+    rpd: int | None,
+) -> tuple[ApiKey, dict[str, int], dict[str, int]] | None:
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        key = await session.get(ApiKey, key_id)
+        if key is None:
+            return None
+        before = effective_limits(key)
+        if rpm is not None:
+            key.rate_limit_rpm = rpm
+        if rph is not None:
+            key.rate_limit_rph = rph
+        if rpd is not None:
+            key.rate_limit_rpd = rpd
+        await session.commit()
+        after = effective_limits(key)
+        return key, before, after
+
+
+async def _get_key_usage(key_id: int) -> tuple[ApiKey, dict[str, dict[str, int]]] | None:
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        key = await session.get(ApiKey, key_id)
+        if key is None:
+            return None
+        usage = await TokenBucket().get_usage(session, key_id)
+        return key, usage
+
+
+def _fmt_resets(seconds: int) -> str:
+    if seconds >= 3600:
+        return f"{seconds // 3600}h"
+    if seconds >= 60:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+@keys_app.command("set-limits")
+def keys_set_limits(
+    key_id: int = typer.Argument(..., help="ID of the key to update."),
+    rpm: int | None = typer.Option(None, "--rpm", help="Requests per minute."),
+    rph: int | None = typer.Option(None, "--rph", help="Requests per hour."),
+    rpd: int | None = typer.Option(None, "--rpd", help="Requests per day."),
+) -> None:
+    if rpm is None and rph is None and rpd is None:
+        console.print("[red]Pass at least one of --rpm, --rph, --rpd.[/red]")
+        raise typer.Exit(code=1)
+    result = asyncio.run(_set_key_limits(key_id, rpm, rph, rpd))
+    if result is None:
+        console.print(f"[red]Key ID {key_id} not found.[/red]")
+        raise typer.Exit(code=1)
+    key, before, after = result
+    console.print(f"[bold]Key {key.id} — {key.name}[/bold]")
+    console.print(
+        f"  Minute: {before['minute']} -> {after['minute']}\n"
+        f"  Hour:   {before['hour']} -> {after['hour']}\n"
+        f"  Day:    {before['day']} -> {after['day']}"
+    )
+
+
+@keys_app.command("usage")
+def keys_usage(
+    key_id: int = typer.Argument(..., help="ID of the key to inspect."),
+) -> None:
+    result = asyncio.run(_get_key_usage(key_id))
+    if result is None:
+        console.print(f"[red]Key ID {key_id} not found.[/red]")
+        raise typer.Exit(code=1)
+    key, usage = result
+    console.print(f"[bold]Key:[/bold] {key.name}")
+    for window in ("minute", "hour", "day"):
+        u = usage[window]
+        console.print(
+            f"  {window.capitalize():7s} {u['used']}/{u['limit']} used "
+            f"(resets in {_fmt_resets(u['resets_in'])})"
+        )
 
 
 _VALID_PROVIDERS = {"openai", "anthropic", "ollama", "mistral"}

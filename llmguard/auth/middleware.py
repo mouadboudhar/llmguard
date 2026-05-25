@@ -38,4 +38,5 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             await session.commit()
 
         request.state.key_id = key_id
+        request.state.key_record = api_key
         return await call_next(request)
