@@ -26,6 +26,33 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
+      - name: Cache argostranslate models
+        uses: actions/cache@v3
+        with:
+          path: ~/.local/share/argos-translate
+          key: argos-models-fr-en-${{ runner.os }}
+          restore-keys: argos-models-fr-en-
+      - name: Install argostranslate models for CI
+        run: |
+          python -m pip install argostranslate lingua-language-detector
+          python -c "
+          import argostranslate.package
+          argostranslate.package.update_package_index()
+          available = argostranslate.package.get_available_packages()
+
+          fr_en = next(
+            (p for p in available
+             if p.from_code == 'fr' and p.to_code == 'en'),
+            None
+          )
+          if fr_en:
+              argostranslate.package.install_from_path(
+                  fr_en.download()
+              )
+              print('Installed fr->en model')
+          else:
+              print('fr->en model not found')
+          "
       - run: pytest llmguard/tests/ -v
 
   npm-build:
