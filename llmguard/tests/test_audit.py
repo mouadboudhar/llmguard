@@ -33,9 +33,19 @@ FAKE_COMPLETION = {
 
 
 async def _drain_pending_tasks() -> None:
-    # emit() schedules record/broadcast via asyncio.create_task; give them a tick.
-    for _ in range(5):
-        await asyncio.sleep(0)
+    # emit() schedules record/broadcast via asyncio.create_task; wait for them.
+    # Give tasks a chance to start
+    await asyncio.sleep(0)
+    # Collect all non-current tasks
+    tasks = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and not t.done()
+    ]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    # One more yield to let any new tasks spawned during gather complete
+    await asyncio.sleep(0)
 
 
 @pytest_asyncio.fixture

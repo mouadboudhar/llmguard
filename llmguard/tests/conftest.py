@@ -1,7 +1,9 @@
+import os
+import tempfile
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from llmguard import db
 from llmguard.auth.keys import generate_api_key, hash_key
@@ -12,11 +14,18 @@ from llmguard.proxy.main import app
 
 @pytest_asyncio.fixture
 async def session_factory(monkeypatch):
-    """In-memory SQLite engine, with llmguard.db patched so the middleware uses it."""
+    """File-backed SQLite engine, with llmguard.db patched so the middleware uses it.
+
+    A file gives each session its own connection (real transaction isolation). An
+    in-memory StaticPool shares ONE connection across every session, so the proxy's
+    fire-and-forget audit writes get rolled back by another session's transaction
+    boundary on that shared connection — the source of the flaky audit tests.
+    """
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     engine = create_async_engine(
-        "sqlite+aiosqlite://",
+        f"sqlite+aiosqlite:///{path}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
@@ -25,6 +34,7 @@ async def session_factory(monkeypatch):
     monkeypatch.setattr(db, "AsyncSessionLocal", factory)
     yield factory
     await engine.dispose()
+    os.unlink(path)
 
 
 @pytest_asyncio.fixture
