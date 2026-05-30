@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
-import { ENDPOINTS, API_KEYS, formatNum } from '../data';
+import { useApp } from '../context/AppContext';
+import { formatNum } from '../data';
 
 const NAV_ITEMS = [
   { id: 'overview',  path: '/overview',  label: 'Overview',     icon: '◇' },
@@ -16,10 +17,10 @@ export default function Sidebar() {
   const navigate  = useNavigate();
   const location  = useLocation();
   const { theme, setTheme } = useTheme();
+  const { endpoints, keys, events } = useApp();
 
   const activePath = location.pathname;
-  const endpoints  = ENDPOINTS;
-  const keys       = API_KEYS.slice(0, 4);
+  const keysPreview = keys.slice(0, 4);
 
   return (
     <aside
@@ -87,12 +88,12 @@ export default function Sidebar() {
                     {item.icon}
                   </span>
                   <span className="flex-1">{item.label}</span>
-                  {item.id === 'audit' && (
+                  {item.id === 'audit' && events.length > 0 && (
                     <span
                       className="font-mono text-[10.5px] tracking-[0.04em]"
                       style={{ color: 'var(--text-4)' }}
                     >
-                      142
+                      {events.length}
                     </span>
                   )}
                 </button>
@@ -120,7 +121,7 @@ export default function Sidebar() {
                 onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--bg-2)'; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.background = 'transparent'; }}
               >
-                <span className={`ep-dot ${ep.status}`} />
+                <span className={`ep-dot ${ep.is_active ? 'healthy' : 'paused'}`} />
                 <div className="min-w-0">
                   <div
                     className="truncate font-medium"
@@ -138,7 +139,7 @@ export default function Sidebar() {
                   </div>
                 </div>
                 <div className="font-mono text-[10.5px] text-right" style={{ color: 'var(--text-3)' }}>
-                  <span style={{ color: 'var(--text-2)' }}>{formatNum(ep.reqsToday)}</span>
+                  <span style={{ color: 'var(--text-2)' }}>{formatNum(ep.stats?.requests_today ?? 0)}</span>
                 </div>
               </button>
             ))}
@@ -152,10 +153,10 @@ export default function Sidebar() {
             style={{ color: 'var(--text-4)' }}
           >
             <span>API Keys</span>
-            <span className="font-mono text-[10px]">{API_KEYS.length}</span>
+            <span className="font-mono text-[10px]">{keys.length}</span>
           </div>
           <div className="flex flex-col px-2">
-            {keys.map((k) => (
+            {keysPreview.map((k) => (
               <button
                 key={k.id}
                 onClick={() => navigate('/keys')}
@@ -165,12 +166,12 @@ export default function Sidebar() {
               >
                 <span
                   className="font-mono truncate mr-2"
-                  style={{ fontSize: '11.5px', color: 'var(--text)', maxWidth: '150px' }}
+                  style={{ fontSize: '11.5px', color: k.is_active ? 'var(--text)' : 'var(--text-4)', maxWidth: '150px' }}
                 >
                   {k.name}
                 </span>
                 <span className="text-[10.5px] flex-shrink-0" style={{ color: 'var(--text-3)' }}>
-                  {k.lastUsed}
+                  {k.is_active ? 'active' : 'revoked'}
                 </span>
               </button>
             ))}

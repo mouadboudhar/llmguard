@@ -6,7 +6,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from llmguard.audit.models import AuditEvent
-from llmguard.auth.models import _utcnow
+from llmguard.auth.models import ApiKey, _utcnow
+from llmguard.config.models import Endpoint
 
 
 class AuditRepository(ABC):
@@ -39,6 +40,14 @@ class AuditRepository(ABC):
 
     @abstractmethod
     async def get_stats(self, hours: int = 24) -> dict[str, Any]: ...
+
+    @abstractmethod
+    async def get_stats_by_endpoint(
+        self, endpoint_id: int, hours: int = 24
+    ) -> dict[str, Any]: ...
+
+    @abstractmethod
+    async def get_summary_stats(self) -> dict[str, Any]: ...
 
     @abstractmethod
     async def get_by_id(self, event_id: int) -> AuditEvent | None: ...
@@ -120,6 +129,100 @@ class SQLiteAuditRepository(AuditRepository):
                 select(AuditEvent).where(AuditEvent.id == event_id)
             )
             return result.scalar_one_or_none()
+
+    async def get_stats_by_endpoint(
+        self, endpoint_id: int, hours: int = 24
+    ) -> dict[str, Any]:
+        # REQUEST_COMPLETE carries no endpoint_id, so per-endpoint request volume
+        # is measured from UPSTREAM_REQUEST events (which do) plus blocked guards.
+        from_ts = _utcnow() - timedelta(hours=hours)
+        blocked_types = ("INPUT_GUARD_BLOCKED", "OUTPUT_GUARD_BLOCKED")
+
+        async with self._session_factory() as session:
+            total_stmt = (
+                select(func.count(AuditEvent.id))
+                .where(AuditEvent.endpoint_id == endpoint_id)
+                .where(AuditEvent.event_type == "UPSTREAM_REQUEST")
+            )
+            requests_total = int((await session.execute(total_stmt)).scalar_one() or 0)
+
+            today_stmt = total_stmt.where(AuditEvent.timestamp >= from_ts)
+            requests_today = int((await session.execute(today_stmt)).scalar_one() or 0)
+
+            blocked_stmt = (
+                select(func.count(AuditEvent.id))
+                .where(AuditEvent.endpoint_id == endpoint_id)
+                .where(AuditEvent.event_type.in_(blocked_types))
+                .where(AuditEvent.timestamp >= from_ts)
+            )
+            blocked_today = int((await session.execute(blocked_stmt)).scalar_one() or 0)
+
+            avg_stmt = (
+                select(func.avg(AuditEvent.latency_ms))
+                .where(AuditEvent.endpoint_id == endpoint_id)
+                .where(AuditEvent.event_type == "UPSTREAM_REQUEST")
+                .where(AuditEvent.timestamp >= from_ts)
+            )
+            avg_raw = (await session.execute(avg_stmt)).scalar_one()
+            avg_latency_ms = int(avg_raw) if avg_raw is not None else 0
+
+        return {
+            "requests_today": requests_today,
+            "requests_total": requests_total,
+            "blocked_today": blocked_today,
+            "avg_latency_ms": avg_latency_ms,
+        }
+
+    async def get_summary_stats(self) -> dict[str, Any]:
+        # Aggregate across all endpoints. requests_today/blocked_today use a
+        # rolling 24h window (consistent with get_stats); total is all-time.
+        from_ts = _utcnow() - timedelta(hours=24)
+        blocked_types = ("INPUT_GUARD_BLOCKED", "OUTPUT_GUARD_BLOCKED")
+
+        async with self._session_factory() as session:
+            total_stmt = select(func.count(AuditEvent.id)).where(
+                AuditEvent.event_type == "REQUEST_COMPLETE"
+            )
+            total_requests = int((await session.execute(total_stmt)).scalar_one() or 0)
+
+            today_stmt = total_stmt.where(AuditEvent.timestamp >= from_ts)
+            requests_today = int((await session.execute(today_stmt)).scalar_one() or 0)
+
+            blocked_stmt = (
+                select(func.count(AuditEvent.id))
+                .where(AuditEvent.event_type.in_(blocked_types))
+                .where(AuditEvent.timestamp >= from_ts)
+            )
+            blocked_today = int((await session.execute(blocked_stmt)).scalar_one() or 0)
+
+            avg_stmt = (
+                select(func.avg(AuditEvent.latency_ms))
+                .where(AuditEvent.event_type == "REQUEST_COMPLETE")
+                .where(AuditEvent.timestamp >= from_ts)
+            )
+            avg_raw = (await session.execute(avg_stmt)).scalar_one()
+            avg_latency_ms = int(avg_raw) if avg_raw is not None else 0
+
+            endpoints_stmt = select(func.count(Endpoint.id)).where(
+                Endpoint.is_active.is_(True)
+            )
+            active_endpoints = int(
+                (await session.execute(endpoints_stmt)).scalar_one() or 0
+            )
+
+            keys_stmt = select(func.count(ApiKey.id)).where(
+                ApiKey.revoked_at.is_(None)
+            )
+            active_keys = int((await session.execute(keys_stmt)).scalar_one() or 0)
+
+        return {
+            "total_requests": total_requests,
+            "requests_today": requests_today,
+            "blocked_today": blocked_today,
+            "avg_latency_ms": avg_latency_ms,
+            "active_endpoints": active_endpoints,
+            "active_keys": active_keys,
+        }
 
     async def get_stats(self, hours: int = 24) -> dict[str, Any]:
         from_ts = _utcnow() - timedelta(hours=hours)

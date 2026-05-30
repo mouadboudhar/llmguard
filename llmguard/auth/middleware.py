@@ -10,7 +10,11 @@ from llmguard.auth.keys import hash_key
 from llmguard.auth.repository import SQLiteKeyRepository
 
 # GET-only paths that don't require an API key.
-_EXEMPT_PATHS = frozenset({"/health", "/docs", "/openapi.json"})
+_EXEMPT_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+# The admin/dashboard surface authenticates with the dashboard token on each
+# route (verify_dashboard_token), not the customer API key, so it bypasses this
+# middleware entirely. /ws/* websockets already bypass BaseHTTPMiddleware.
+_EXEMPT_PREFIXES = ("/api/", "/ws/")
 
 
 class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
@@ -18,7 +22,10 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if request.method == "GET" and request.url.path in _EXEMPT_PATHS:
+        path = request.url.path
+        if (request.method == "GET" and path in _EXEMPT_PATHS) or path.startswith(
+            _EXEMPT_PREFIXES
+        ):
             return await call_next(request)
 
         request_id = getattr(request.state, "request_id", None)

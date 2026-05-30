@@ -14,6 +14,10 @@ class EndpointRepository(ABC):
         provider: str,
         upstream_url: str,
         default_model: str | None = None,
+        kb_type: str | None = None,
+        kb_url: str | None = None,
+        kb_collection: str | None = None,
+        kb_top_k: int = 4,
     ) -> Endpoint: ...
 
     @abstractmethod
@@ -35,6 +39,10 @@ _UPDATABLE_FIELDS = {
     "upstream_url",
     "default_model",
     "is_active",
+    "kb_type",
+    "kb_url",
+    "kb_collection",
+    "kb_top_k",
 }
 
 
@@ -48,12 +56,20 @@ class SQLiteEndpointRepository(EndpointRepository):
         provider: str,
         upstream_url: str,
         default_model: str | None = None,
+        kb_type: str | None = None,
+        kb_url: str | None = None,
+        kb_collection: str | None = None,
+        kb_top_k: int = 4,
     ) -> Endpoint:
         endpoint = Endpoint(
             name=name,
             provider=provider,
             upstream_url=upstream_url,
             default_model=default_model,
+            kb_type=kb_type,
+            kb_url=kb_url,
+            kb_collection=kb_collection,
+            kb_top_k=kb_top_k,
         )
         self._session.add(endpoint)
         await self._session.flush()

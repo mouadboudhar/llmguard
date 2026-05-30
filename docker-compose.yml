@@ -1,3 +1,42 @@
-# TODO: define services (proxy, dashboard, db) once core is implemented
-version: "3.9"
-services: {}
+services:
+  proxy:
+    build: .
+    container_name: llmguard-proxy
+    ports:
+      - "8000:8000"
+    volumes:
+      - llmguard-data:/app/data
+    environment:
+      - LLMGUARD_DB_PATH=/app/data/llmguard.db
+      - LLMGUARD_UPSTREAM_URL=${LLMGUARD_UPSTREAM_URL:-https://api.openai.com}
+      - LLMGUARD_PROVIDER=${LLMGUARD_PROVIDER:-openai}
+      - LLMGUARD_DEFAULT_RPM=${LLMGUARD_DEFAULT_RPM:-60}
+      - LLMGUARD_DEFAULT_RPH=${LLMGUARD_DEFAULT_RPH:-1000}
+      - LLMGUARD_DEFAULT_RPD=${LLMGUARD_DEFAULT_RPD:-10000}
+      - LLMGUARD_OUTPUT_GUARD_ACTION=${LLMGUARD_OUTPUT_GUARD_ACTION:-redact}
+      - LLMGUARD_DASHBOARD_TOKEN=${LLMGUARD_DASHBOARD_TOKEN:-change-me}
+      - LLMGUARD_TRANSLATE_TIMEOUT=${LLMGUARD_TRANSLATE_TIMEOUT:-1.0}
+      - LLMGUARD_DEFAULT_CLEARANCE=${LLMGUARD_DEFAULT_CLEARANCE:-INTERNAL}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: llmguard-dashboard
+    ports:
+      - "5173:80"
+    depends_on:
+      proxy:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  llmguard-data:
+    driver: local

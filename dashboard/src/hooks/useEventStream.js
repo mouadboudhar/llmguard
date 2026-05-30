@@ -1,58 +1,19 @@
-import { useState, useEffect, useRef } from 'react';
-import { EVENTS_SEED, STREAM_TEMPLATES } from '../data';
+import { useEffect, useState } from 'react';
+import { useApp } from '../context/AppContext';
 
-const ENDPOINTS_LIST = [
-  'Production Chatbot',
-  'Support Agent',
-  'Internal Knowledge',
-  'Code Assistant',
-];
-
-let _counter = EVENTS_SEED.length + 1;
-
-function nowTs() {
-  const d = new Date();
-  return [
-    String(d.getHours()).padStart(2, '0'),
-    String(d.getMinutes()).padStart(2, '0'),
-    String(d.getSeconds()).padStart(2, '0'),
-  ].join(':') + '.' + String(d.getMilliseconds()).padStart(3, '0');
-}
-
+/**
+ * Pause-aware view over the live event stream provided by AppContext (backed by
+ * the /ws/events WebSocket). When paused, the displayed list freezes while new
+ * events continue to accumulate in the context.
+ */
 export function useEventStream() {
-  const [events, setEvents] = useState(() =>
-    EVENTS_SEED.map(e => ({ ...e, isNew: false }))
-  );
+  const { events } = useApp();
   const [paused, setPaused] = useState(false);
-  const pausedRef = useRef(false);
-
-  useEffect(() => { pausedRef.current = paused; }, [paused]);
+  const [frozen, setFrozen] = useState(events);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      if (pausedRef.current) return;
+    if (!paused) setFrozen(events);
+  }, [events, paused]);
 
-      const tpl = STREAM_TEMPLATES[Math.floor(Math.random() * STREAM_TEMPLATES.length)];
-      const newEvent = {
-        id: _counter++,
-        ts: nowTs(),
-        sev: tpl.sev,
-        type: tpl.type,
-        endpoint: ENDPOINTS_LIST[Math.floor(Math.random() * ENDPOINTS_LIST.length)],
-        detail: tpl.detailFn(),
-        isNew: true,
-      };
-
-      setEvents(prev => [newEvent, ...prev.slice(0, 49)]);
-
-      // Clear flash after animation completes
-      setTimeout(() => {
-        setEvents(prev => prev.map(e => e.id === newEvent.id ? { ...e, isNew: false } : e));
-      }, 600);
-    }, 3000);
-
-    return () => clearInterval(id);
-  }, []);
-
-  return { events, paused, setPaused };
+  return { events: paused ? frozen : events, paused, setPaused };
 }

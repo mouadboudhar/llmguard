@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import TopBar  from '../components/TopBar';
 import Switch  from '../components/Switch';
+import { useApp } from '../context/AppContext';
 
 /* ── Guard stats bar ───────────────────────────────── */
 function StatsBar({ items }) {
@@ -30,31 +31,38 @@ function ToggleRow({ name, desc, on, onToggle, extra }) {
   );
 }
 
-/* ── Page ──────────────────────────────────────────── */
+const ACTION_LABELS = { redact: 'Redact', block: 'Block', log_only: 'Log only' };
+
 export default function GuardConfigPage() {
-  const [input, setInput] = useState({
-    on: true, pattern: true, unicode: true, entropy: true,
+  const { guardConfig, serverInfo, updateGuardConfig } = useApp();
+
+  // Cosmetic-only detector toggles (no backend yet — stored as Stage 13b intent).
+  const [inputDetectors, setInputDetectors] = useState({ pattern: true, unicode: true, entropy: true });
+  const [outputDetectors, setOutputDetectors] = useState({
+    cc: true, email: true, ssn: true, phone: true, apikeys: true, entropy: true, threshold: 4.5,
   });
-  const [output, setOutput] = useState({
-    on: true, defaultAction: 'Redact',
-    cc: true, email: true, ssn: true, phone: true, apikeys: true,
-    entropy: true, threshold: 4.5,
-  });
-  const [authz, setAuthz] = useState({ on: false });
+  const [busy, setBusy] = useState(false);
+
+  const input = guardConfig?.input_guard ?? { enabled: true };
+  const output = guardConfig?.output_guard ?? { enabled: true, action: 'redact' };
+  const translation = guardConfig?.translation ?? { enabled: true, timeout_seconds: 1.0, supported_languages: [] };
+
+  async function patch(body) {
+    setBusy(true);
+    try { await updateGuardConfig(body); } finally { setBusy(false); }
+  }
 
   return (
     <>
       <TopBar title="Guard Config" />
 
       <div className="flex-1 overflow-y-auto" style={{ padding: '24px 28px 32px' }}>
-        <h2
-          className="m-0 font-semibold"
-          style={{ fontSize: '20px', letterSpacing: '-0.01em', color: 'var(--text)' }}
-        >
+        <h2 className="m-0 font-semibold" style={{ fontSize: '20px', letterSpacing: '-0.01em', color: 'var(--text)' }}>
           Guard Configuration
         </h2>
         <p className="mt-1.5 mb-4 text-sm" style={{ color: 'var(--text-3)', maxWidth: '640px' }}>
-          Configure global defaults for all endpoints. Per-endpoint overrides are set in the Endpoints page.
+          Global defaults applied to all endpoints. The main enable switches, output action, and
+          translation settings are persisted server-side; per-detector toggles are display-only for now.
         </p>
 
         {/* ── Input Guard ── */}
@@ -62,10 +70,10 @@ export default function GuardConfigPage() {
           <div className="guard-card-head">
             <div>
               <div className="g-title">
-                <span className={`g-status${input.on ? ' g-on' : ' g-off'}`} />
+                <span className={`g-status${input.enabled ? ' g-on' : ' g-off'}`} />
                 Input Guard
-                <span className="g-state" style={{ color: input.on ? 'var(--v-green)' : 'var(--text-3)' }}>
-                  {input.on ? 'Enabled globally' : 'Disabled'}
+                <span className="g-state" style={{ color: input.enabled ? 'var(--v-green)' : 'var(--text-3)' }}>
+                  {input.enabled ? 'Enabled globally' : 'Disabled'}
                 </span>
               </div>
               <p className="g-desc">
@@ -73,49 +81,20 @@ export default function GuardConfigPage() {
                 encoded payloads, and high-density instruction patterns.
               </p>
             </div>
-            <Switch big on={input.on} onToggle={() => setInput(s => ({ ...s, on: !s.on }))} />
+            <Switch big on={input.enabled} onToggle={() => !busy && patch({ input_guard: { enabled: !input.enabled } })} />
           </div>
 
           <StatsBar items={[
-            { label: 'Scanned this week', value: '35.2k' },
-            { label: 'Blocked',           value: '187', variant: 'danger' },
-            { label: 'Block rate',        value: '0.5%' },
+            { label: 'Requests today', value: serverInfo?.requests_today ?? '—' },
+            { label: 'Blocked', value: serverInfo?.blocked_today ?? '—', variant: 'danger' },
           ]} />
 
-          <ToggleRow
-            name="Pattern matching"
-            desc="Regex-based injection detection"
-            on={input.pattern}
-            onToggle={() => setInput(s => ({ ...s, pattern: !s.pattern }))}
-          />
-          <ToggleRow
-            name="Unicode filtering"
-            desc="Normalises homoglyph characters"
-            on={input.unicode}
-            onToggle={() => setInput(s => ({ ...s, unicode: !s.unicode }))}
-          />
-          <ToggleRow
-            name="Entropy heuristic"
-            desc="Flags unusual instruction density"
-            on={input.entropy}
-            onToggle={() => setInput(s => ({ ...s, entropy: !s.entropy }))}
-          />
-
-          <div className="custom-pat">
-            <div className="lbl">Custom patterns</div>
-            <div className="pat-area">
-              <div className="pat-line">/ignore\s+(all\s+)?previous\s+instructions/i</div>
-              <div className="pat-line">/(system|developer)\s+prompt/i</div>
-            </div>
-            <button
-              className="text-[11.5px] font-medium"
-              style={{ color: 'var(--accent)' }}
-              onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent-2)'; }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--accent)'; }}
-            >
-              + Add custom pattern
-            </button>
-          </div>
+          <ToggleRow name="Pattern matching" desc="Regex-based injection detection"
+            on={inputDetectors.pattern} onToggle={() => setInputDetectors(s => ({ ...s, pattern: !s.pattern }))} />
+          <ToggleRow name="Unicode filtering" desc="Normalises homoglyph characters"
+            on={inputDetectors.unicode} onToggle={() => setInputDetectors(s => ({ ...s, unicode: !s.unicode }))} />
+          <ToggleRow name="Entropy heuristic" desc="Flags unusual instruction density"
+            on={inputDetectors.entropy} onToggle={() => setInputDetectors(s => ({ ...s, entropy: !s.entropy }))} />
         </div>
 
         {/* ── Output Guard ── */}
@@ -123,10 +102,10 @@ export default function GuardConfigPage() {
           <div className="guard-card-head">
             <div>
               <div className="g-title">
-                <span className={`g-status${output.on ? ' g-on' : ' g-off'}`} />
+                <span className={`g-status${output.enabled ? ' g-on' : ' g-off'}`} />
                 Output Guard
-                <span className="g-state" style={{ color: output.on ? 'var(--v-green)' : 'var(--text-3)' }}>
-                  {output.on ? 'Enabled globally' : 'Disabled'}
+                <span className="g-state" style={{ color: output.enabled ? 'var(--v-green)' : 'var(--text-3)' }}>
+                  {output.enabled ? 'Enabled globally' : 'Disabled'}
                 </span>
               </div>
               <p className="g-desc">
@@ -137,23 +116,16 @@ export default function GuardConfigPage() {
                 <select
                   className="lg-select"
                   style={{ width: 140 }}
-                  value={output.defaultAction}
-                  onChange={e => setOutput(s => ({ ...s, defaultAction: e.target.value }))}
+                  value={output.action}
+                  disabled={busy}
+                  onChange={e => patch({ output_guard: { action: e.target.value } })}
                 >
-                  <option>Redact</option>
-                  <option>Block</option>
-                  <option>Annotate</option>
+                  {Object.entries(ACTION_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
             </div>
-            <Switch big on={output.on} onToggle={() => setOutput(s => ({ ...s, on: !s.on }))} />
+            <Switch big on={output.enabled} onToggle={() => !busy && patch({ output_guard: { enabled: !output.enabled } })} />
           </div>
-
-          <StatsBar items={[
-            { label: 'Scanned this week', value: '34.9k' },
-            { label: 'Redacted',          value: '67', variant: 'warn' },
-            { label: 'Rate',              value: '0.2%' },
-          ]} />
 
           {[
             ['cc',      'Credit card numbers',   'Detects PAN sequences (Luhn-checked)'],
@@ -162,89 +134,65 @@ export default function GuardConfigPage() {
             ['phone',   'Phone numbers',          'International + national formats'],
             ['apikeys', 'API keys / tokens',      'Provider-specific token signatures'],
           ].map(([key, name, desc]) => (
-            <ToggleRow
-              key={key}
-              name={name}
-              desc={desc}
-              on={output[key]}
-              onToggle={() => setOutput(s => ({ ...s, [key]: !s[key] }))}
-            />
+            <ToggleRow key={key} name={name} desc={desc}
+              on={outputDetectors[key]} onToggle={() => setOutputDetectors(s => ({ ...s, [key]: !s[key] }))} />
           ))}
 
           <ToggleRow
             name="High-entropy strings"
             desc="Flags long base64/hex sequences likely to be secrets"
-            on={output.entropy}
-            onToggle={() => setOutput(s => ({ ...s, entropy: !s.entropy }))}
+            on={outputDetectors.entropy}
+            onToggle={() => setOutputDetectors(s => ({ ...s, entropy: !s.entropy }))}
             extra={
               <div className="slider-row">
                 <span className="lbl">Threshold</span>
-                <input
-                  type="range"
-                  min={3} max={6} step={0.1}
-                  value={output.threshold}
-                  onChange={e => setOutput(s => ({ ...s, threshold: parseFloat(e.target.value) }))}
-                />
-                <span className="num">{output.threshold.toFixed(1)}</span>
+                <input type="range" min={3} max={6} step={0.1}
+                  value={outputDetectors.threshold}
+                  onChange={e => setOutputDetectors(s => ({ ...s, threshold: parseFloat(e.target.value) }))} />
+                <span className="num">{outputDetectors.threshold.toFixed(1)}</span>
               </div>
             }
           />
         </div>
 
-        {/* ── Retrieval AuthZ ── */}
+        {/* ── Translation ── */}
         <div className="lg-card guard-card" style={{ marginTop: 16, marginBottom: 16 }}>
           <div className="guard-card-head">
             <div>
               <div className="g-title">
-                <span className={`g-status${authz.on ? ' g-on' : ' g-off'}`} />
-                Retrieval AuthZ
-                <span className="g-state" style={{ color: 'var(--text-3)' }}>
-                  {authz.on ? 'Enabled globally' : 'Disabled globally'}
+                <span className={`g-status${translation.enabled ? ' g-on' : ' g-off'}`} />
+                Translation
+                <span className="g-state" style={{ color: translation.enabled ? 'var(--v-green)' : 'var(--text-3)' }}>
+                  {translation.enabled ? 'Enabled globally' : 'Disabled'}
                 </span>
               </div>
               <p className="g-desc">
-                Filters retrieved context documents by user clearance level.
-                Only relevant for RAG-based endpoints.
+                Detects non-English prompts and translates them before the Input Guard scans, so
+                multilingual injections can't bypass detection.
               </p>
+              <div className="flex items-center gap-2.5 mt-2.5">
+                <span className="text-[11.5px]" style={{ color: 'var(--text-3)' }}>Timeout (s)</span>
+                <input
+                  className="lg-input" type="number" min={0.1} max={10} step={0.1}
+                  style={{ width: 90 }}
+                  defaultValue={translation.timeout_seconds}
+                  disabled={busy}
+                  onBlur={e => {
+                    const v = parseFloat(e.target.value);
+                    if (!Number.isNaN(v) && v !== translation.timeout_seconds) patch({ translation: { timeout_seconds: v } });
+                  }}
+                />
+              </div>
             </div>
-            <Switch big on={authz.on} onToggle={() => setAuthz(s => ({ ...s, on: !s.on }))} />
+            <Switch big on={translation.enabled} onToggle={() => !busy && patch({ translation: { enabled: !translation.enabled } })} />
           </div>
 
           <div className="info-banner">
             <span>i</span>
             <span>
-              This guard is only effective when your application sends{' '}
-              <code>X-User-Clearance</code> headers and your documents are
-              tagged with <code>clearance_level</code> metadata at ingestion.
+              Supported languages:{' '}
+              <code>{(translation.supported_languages || []).join(', ') || '—'}</code>
             </span>
-          </div>
-
-          <div className="clearance-grid">
-            {[
-              ['PUBLIC',       'Available to all callers'],
-              ['INTERNAL',     'Authenticated employees only'],
-              ['CONFIDENTIAL', 'Restricted teams + above'],
-              ['RESTRICTED',   'Named individuals only'],
-            ].map(([tier, desc], i) => (
-              <div key={tier} className="clearance-tier">
-                <div className="t-head">
-                  <span className="num">{i + 1}</span>
-                  <span className="tier">{tier}</span>
-                </div>
-                <div className="t-desc">{desc}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="card-foot">
-            <button
-              className="text-[11.5px] font-medium"
-              style={{ color: 'var(--accent)' }}
-              onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent-2)'; }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--accent)'; }}
-            >
-              View integration guide →
-            </button>
           </div>
         </div>
       </div>

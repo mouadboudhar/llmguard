@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
+import { AppProvider } from './context/AppContext';
+import { getToken } from './hooks/useApi';
 import Sidebar from './components/Sidebar';
 
 import LoginPage      from './pages/LoginPage';
@@ -10,6 +12,11 @@ import AuditLogPage   from './pages/AuditLogPage';
 import GuardConfigPage from './pages/GuardConfigPage';
 import AccountPage    from './pages/AccountPage';
 import SettingsPage   from './pages/SettingsPage';
+
+function RequireAuth({ children }) {
+  if (!getToken()) return <Navigate to="/login" replace />;
+  return children;
+}
 
 function Shell() {
   return (
@@ -31,7 +38,16 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
-          <Route path="/" element={<Shell />}>
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <AppProvider>
+                  <Shell />
+                </AppProvider>
+              </RequireAuth>
+            }
+          >
             <Route index element={<Navigate to="/overview" replace />} />
             <Route path="overview"  element={<OverviewPage />} />
             <Route path="endpoints" element={<EndpointsPage />} />

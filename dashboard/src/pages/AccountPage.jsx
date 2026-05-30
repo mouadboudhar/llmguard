@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import TopBar from '../components/TopBar';
 import Switch from '../components/Switch';
+import { clearToken } from '../hooks/useApi';
+
+function signOut() {
+  clearToken();
+  window.location.assign('/login');
+}
 
 const SESSIONS = [
   { dev: 'MacBook Pro · Chrome 124', loc: 'San Francisco, CA · 192.168.4.21', when: 'Active now', current: true  },
@@ -72,7 +78,7 @@ function LeftColumn() {
           ) : (
             <button className="lg-btn" onClick={() => setEditing(true)}>Edit profile</button>
           )}
-          <button className="lg-btn danger" onClick={() => alert('Signed out (demo)')}>↪ Sign out</button>
+          <button className="lg-btn danger" onClick={signOut}>↪ Sign out</button>
         </div>
       </div>
 

@@ -6,11 +6,17 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from llmguard import db
 from llmguard.adapters.base import AdapterConfig
 from llmguard.adapters.factory import get_adapter
+from llmguard.api.auth import router as auth_router
+from llmguard.api.endpoints import router as endpoints_router
+from llmguard.api.guards import router as guards_router
+from llmguard.api.keys import router as keys_router
+from llmguard.api.server import router as server_router
 from llmguard.audit.api import router as audit_api_router
 from llmguard.audit.broadcaster import broadcaster
 from llmguard.audit.emitter import emit, init_emitter
@@ -57,8 +63,36 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="LLMGuard", version="0.1.0", lifespan=lifespan)
 app.add_middleware(ApiKeyAuthMiddleware)
 app.add_middleware(RequestContextMiddleware)
+# Added last => outermost layer, so CORS preflight (OPTIONS) is answered before
+# the auth middleware runs. Origins are overridable via LLMGUARD_CORS_ORIGINS.
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "LLMGUARD_CORS_ORIGINS", "http://localhost:5173,http://localhost:4173"
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Dashboard-Token",
+        "X-LLMGuard-Key",
+        "X-User-Clearance",
+    ],
+    expose_headers=["X-LLMGuard-Redacted"],
+)
 app.include_router(ws_router)
 app.include_router(audit_api_router)
+app.include_router(endpoints_router, prefix="", tags=["Endpoints"])
+app.include_router(keys_router, prefix="", tags=["Keys"])
+app.include_router(auth_router, prefix="", tags=["Auth"])
+app.include_router(server_router, prefix="", tags=["Server"])
+app.include_router(guards_router, prefix="", tags=["Guards"])
 
 
 @app.get("/health")

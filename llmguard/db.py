@@ -35,6 +35,8 @@ async def init_db() -> None:
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_api_keys_rate_limits(conn)
+        await _migrate_api_keys_endpoint_id(conn)
+        await _migrate_endpoint_kb_columns(conn)
 
 
 async def _migrate_api_keys_rate_limits(conn) -> None:
@@ -45,6 +47,29 @@ async def _migrate_api_keys_rate_limits(conn) -> None:
     for col in ("rate_limit_rpm", "rate_limit_rph", "rate_limit_rpd"):
         if col not in existing:
             await conn.execute(text(f"ALTER TABLE api_keys ADD COLUMN {col} INTEGER"))
+
+
+async def _migrate_api_keys_endpoint_id(conn) -> None:
+    # Stage 12: bind keys to an endpoint (soft reference, no DB-level FK).
+    result = await conn.execute(text("PRAGMA table_info(api_keys)"))
+    existing = {row[1] for row in result.fetchall()}
+    if "endpoint_id" not in existing:
+        await conn.execute(text("ALTER TABLE api_keys ADD COLUMN endpoint_id INTEGER"))
+
+
+async def _migrate_endpoint_kb_columns(conn) -> None:
+    # Stage 12: knowledge-base config columns on endpoints.
+    result = await conn.execute(text("PRAGMA table_info(endpoints)"))
+    existing = {row[1] for row in result.fetchall()}
+    coldefs = {
+        "kb_type": "VARCHAR(50)",
+        "kb_url": "VARCHAR(512)",
+        "kb_collection": "VARCHAR(255)",
+        "kb_top_k": "INTEGER NOT NULL DEFAULT 4",
+    }
+    for col, ddl in coldefs.items():
+        if col not in existing:
+            await conn.execute(text(f"ALTER TABLE endpoints ADD COLUMN {col} {ddl}"))
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

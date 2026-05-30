@@ -24,6 +24,8 @@ class ApiKey(Base):
     rate_limit_rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rate_limit_rph: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rate_limit_rpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Soft reference to endpoints.id (no DB-level FK: keeps create_all import-order safe).
+    endpoint_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     @property
     def is_active(self) -> bool:

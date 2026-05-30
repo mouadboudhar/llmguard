@@ -1,6 +1,20 @@
 import { useState } from 'react';
 import TopBar from '../components/TopBar';
 import Switch from '../components/Switch';
+import { useApp } from '../context/AppContext';
+
+function fmtUptime(seconds) {
+  if (seconds == null) return '—';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  return `${d} days, ${h} hours`;
+}
+function fmtBytes(bytes) {
+  if (bytes == null) return '—';
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+  if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
 
 function CardH3({ children }) {
   return (
@@ -25,6 +39,7 @@ function SettingField({ label, children }) {
 }
 
 export default function SettingsPage() {
+  const { serverInfo } = useApp();
   const [retention, setRetention] = useState(90);
   const [rpm, setRpm] = useState(100);
   const [rph, setRph] = useState(2000);
@@ -48,23 +63,15 @@ export default function SettingsPage() {
           <CardH3>Server</CardH3>
           <div className="card-body">
             <SettingField label="Version">
-              <span className="flex items-baseline gap-3">
-                <code className="font-mono text-sm" style={{ color: 'var(--text)' }}>v0.5.0</code>
-                <button
-                  className="text-[11.5px] font-medium"
-                  style={{ color: 'var(--accent)' }}
-                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent-2)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--accent)'; }}
-                >
-                  Check for updates
-                </button>
-              </span>
+              <code className="font-mono text-sm" style={{ color: 'var(--text)' }}>
+                v{serverInfo?.version ?? '—'}
+              </code>
             </SettingField>
             <SettingField label="Uptime">
-              <span className="val">47 days, 6 hours</span>
+              <span className="val">{fmtUptime(serverInfo?.uptime_seconds)}</span>
             </SettingField>
             <SettingField label="Database">
-              <span className="val">SQLite · llmguard.db · 24.3 MB</span>
+              <span className="val">SQLite · {fmtBytes(serverInfo?.database_size_bytes)}</span>
             </SettingField>
             <SettingField label="Log retention">
               <span className="flex items-center gap-2">

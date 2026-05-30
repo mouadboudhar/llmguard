@@ -1,23 +1,31 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { apiRequest, setToken } from '../hooks/useApi';
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const [email, setEmail]       = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError]       = useState('');
+  const [token, setTokenInput] = useState('');
+  const [error, setError]      = useState('');
+  const [busy, setBusy]        = useState(false);
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
-    if (!email || !password) {
-      setError('Email and password are required.');
+    if (!token.trim()) {
+      setError('Dashboard token is required.');
       return;
     }
-    // Hardcoded demo credential — no backend yet
-    if (email === 'admin@acme.com' && password === 'demo') {
+    setBusy(true);
+    setError('');
+    // Stash the token first so apiRequest sends X-Dashboard-Token on /verify.
+    setToken(token.trim());
+    try {
+      await apiRequest('/api/auth/verify', { method: 'POST', body: { token: token.trim() } });
       navigate('/overview');
-    } else {
-      setError('Invalid credentials. Try admin@acme.com / demo');
+    } catch {
+      localStorage.removeItem('llmg_token');
+      setError('Invalid dashboard token.');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -71,39 +79,21 @@ export default function LoginPage() {
 
           <div className="flex flex-col gap-1.5">
             <label
-              htmlFor="email"
+              htmlFor="token"
               className="text-[11px] font-semibold tracking-[0.08em] uppercase"
               style={{ color: 'var(--text-3)' }}
             >
-              Email
+              Dashboard Token
             </label>
             <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              className="lg-input"
-              placeholder="admin@acme.com"
-              value={email}
-              onChange={e => { setEmail(e.target.value); setError(''); }}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="password"
-              className="text-[11px] font-semibold tracking-[0.08em] uppercase"
-              style={{ color: 'var(--text-3)' }}
-            >
-              Password
-            </label>
-            <input
-              id="password"
+              id="token"
               type="password"
               autoComplete="current-password"
               className="lg-input"
-              placeholder="••••••••"
-              value={password}
-              onChange={e => { setPassword(e.target.value); setError(''); }}
+              placeholder="••••••••••••••••"
+              value={token}
+              onChange={e => { setTokenInput(e.target.value); setError(''); }}
+              autoFocus
             />
           </div>
 
@@ -111,20 +101,13 @@ export default function LoginPage() {
             type="submit"
             className="lg-btn primary w-full justify-center mt-1"
             style={{ paddingTop: '9px', paddingBottom: '9px', fontSize: '13px' }}
+            disabled={busy}
           >
-            Sign in
+            {busy ? 'Verifying…' : 'Sign in'}
           </button>
 
-          <div className="text-center">
-            <button
-              type="button"
-              className="text-[11.5px] transition-colors"
-              style={{ color: 'var(--accent)' }}
-              onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent-2)'; }}
-              onMouseLeave={e => { e.currentTarget.style.color = 'var(--accent)'; }}
-            >
-              Forgot password?
-            </button>
+          <div className="text-center text-[11px]" style={{ color: 'var(--text-4)' }}>
+            Set via <code className="font-mono">LLMGUARD_DASHBOARD_TOKEN</code>
           </div>
         </form>
       </div>
