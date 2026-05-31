@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import TopBar from '../components/TopBar';
+import Switch from '../components/Switch';
 import { useApp } from '../context/AppContext';
 import { formatNum } from '../data';
 
@@ -13,6 +14,14 @@ const PROVIDERS = {
   nvidia:    { label: 'NVIDIA',    url: 'https://integrate.api.nvidia.com',  model: 'meta/llama-3.1-70b' },
 };
 
+/* Fallback Input Guard rule list if GET /api/guards/config hasn't loaded. */
+const INPUT_GUARD_RULES = [
+  'OVERRIDE_ATTEMPT', 'PERSONA_SWITCH', 'SYSTEM_PROBE',
+  'ENCODED_PAYLOAD', 'HIGH_DENSITY', 'MULTILINGUAL',
+];
+const PROMPT_GUARD_MODELS = ['gpt-4o-mini', 'gpt-4o', 'claude-haiku'];
+const PROMPT_GUARD_ACTIONS = ['block', 'warn', 'log_only'];
+
 const statusOf = (ep) => (ep.is_active ? 'healthy' : 'paused');
 
 /* ── Shared field row ──────────────────────────────── */
@@ -24,6 +33,256 @@ function Field({ label, children, last }) {
     >
       <span className="text-sm" style={{ color: 'var(--text-3)' }}>{label}</span>
       {children}
+    </div>
+  );
+}
+
+/* ── Shared bits for the guard cards ───────────────── */
+function SectionTitle({ title, subtitle }) {
+  return (
+    <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
+      <h3 className="m-0 font-semibold" style={{ fontSize: '13px', color: 'var(--text)' }}>{title}</h3>
+      {subtitle && <p className="m-0 mt-1 text-[11.5px]" style={{ color: 'var(--text-3)' }}>{subtitle}</p>}
+    </div>
+  );
+}
+
+function SaveBar({ dirty, busy, err, onSave }) {
+  return (
+    <>
+      {err && (
+        <div className="text-[11.5px] mx-[18px] mt-3 px-3 py-2" style={{ border: '1px solid var(--v-red)', color: 'var(--v-red)' }}>
+          {err}
+        </div>
+      )}
+      <div className="flex items-center gap-2 px-[18px] py-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <button className="lg-btn primary" disabled={!dirty || busy} onClick={onSave}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
+    </>
+  );
+}
+
+function RuleRow({ name, on, onToggle }) {
+  return (
+    <div className="flex items-center justify-between py-[7px]" style={{ borderBottom: '1px solid var(--border)' }}>
+      <span className="font-mono text-[11.5px]" style={{ color: on ? 'var(--text-2)' : 'var(--text-4)' }}>{name}</span>
+      <Switch on={on} onToggle={onToggle} />
+    </div>
+  );
+}
+
+/* ── Section 1: per-rule guard config ──────────────── */
+function GuardRulesCard({ ep, onUpdate }) {
+  const { guardConfig } = useApp();
+  const inputRules     = guardConfig?.input_guard?.available_rules  ?? INPUT_GUARD_RULES;
+  const outputRules    = guardConfig?.output_guard?.available_rules ?? [];
+  const supportedLangs = guardConfig?.translation?.supported_languages ?? [];
+
+  // Input + Output share one disabled-rules field on the backend.
+  const [disabled, setDisabled] = useState(() => new Set(ep.disabled_input_rules || []));
+  const [phrases, setPhrases]   = useState(ep.custom_blocked_phrases || []);
+  const [phraseInput, setPhraseInput] = useState('');
+  const [langs, setLangs]       = useState(() => new Set(ep.active_languages || []));
+  const [dirty, setDirty]       = useState(false);
+  const [busy, setBusy]         = useState(false);
+  const [err, setErr]           = useState('');
+
+  useEffect(() => {
+    setDisabled(new Set(ep.disabled_input_rules || []));
+    setPhrases(ep.custom_blocked_phrases || []);
+    setLangs(new Set(ep.active_languages || []));
+    setPhraseInput(''); setDirty(false); setErr('');
+  }, [ep.id]);
+
+  const toggleRule = (name) => {
+    setDisabled(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+    setDirty(true);
+  };
+
+  const setAllRules = (rules, enabled) => {
+    setDisabled(prev => {
+      const next = new Set(prev);
+      rules.forEach(r => { if (enabled) next.delete(r); else next.add(r); });
+      return next;
+    });
+    setDirty(true);
+  };
+
+  const addPhrase = () => {
+    const p = phraseInput.trim();
+    if (p && !phrases.includes(p)) { setPhrases([...phrases, p]); setDirty(true); }
+    setPhraseInput('');
+  };
+  const removePhrase = (p) => { setPhrases(phrases.filter(x => x !== p)); setDirty(true); };
+
+  // active_languages: [] means "all supported". A language reads as active when
+  // the set is empty (all) or it is explicitly included.
+  const langActive = (code) => langs.size === 0 || langs.has(code);
+  const toggleLang = (code) => {
+    setLangs(prev => {
+      const base = prev.size === 0 ? new Set(supportedLangs) : new Set(prev);
+      if (base.has(code)) base.delete(code); else base.add(code);
+      return base;
+    });
+    setDirty(true);
+  };
+
+  async function save() {
+    setBusy(true); setErr('');
+    // Selecting every language is equivalent to the "all" default -> store [].
+    const langArr = (langs.size === 0 || langs.size === supportedLangs.length) ? [] : Array.from(langs);
+    try {
+      await onUpdate(ep.id, {
+        disabled_input_rules: Array.from(disabled),
+        custom_blocked_phrases: phrases,
+        active_languages: langArr,
+      });
+      setDirty(false);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  const subHead = (t, mt) => (
+    <div className={`text-[11px] font-semibold tracking-[0.1em] uppercase ${mt} mb-1.5`} style={{ color: 'var(--text-3)' }}>{t}</div>
+  );
+
+  return (
+    <div className="lg-card mt-[18px]">
+      <SectionTitle title="Guard Rules" subtitle="Toggle individual detection rules. ON = rule active, OFF = disabled for this endpoint." />
+      <div style={{ padding: '4px 18px 0' }}>
+        {subHead('Input Guard', 'mt-3')}
+        {inputRules.map(r => <RuleRow key={r} name={r} on={!disabled.has(r)} onToggle={() => toggleRule(r)} />)}
+
+        <div className="flex items-center justify-between mt-4 mb-1.5">
+          <span className="text-[11px] font-semibold tracking-[0.1em] uppercase" style={{ color: 'var(--text-3)' }}>Output Guard</span>
+          {outputRules.length > 0 && (
+            <span className="flex items-center gap-3 text-[11px]">
+              <button type="button" onClick={() => setAllRules(outputRules, true)}  style={{ color: 'var(--accent)' }}>Enable all</button>
+              <span style={{ color: 'var(--border-2)' }}>·</span>
+              <button type="button" onClick={() => setAllRules(outputRules, false)} style={{ color: 'var(--text-3)' }}>Disable all</button>
+            </span>
+          )}
+        </div>
+        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', columnGap: 18 }}>
+          {outputRules.map(r => <RuleRow key={r} name={r} on={!disabled.has(r)} onToggle={() => toggleRule(r)} />)}
+          {outputRules.length === 0 && <div className="text-[11.5px] py-2" style={{ color: 'var(--text-4)' }}>No output rules available.</div>}
+        </div>
+
+        {subHead('Custom Blocked Phrases', 'mt-4')}
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {phrases.map(p => (
+            <span key={p} className="inline-flex items-center gap-1.5 px-2 py-1 text-[11.5px]"
+                  style={{ border: '1px solid var(--border-2)', background: 'var(--bg-2)', color: 'var(--text-2)' }}>
+              {p}
+              <button onClick={() => removePhrase(p)} style={{ color: 'var(--text-3)' }} title="Remove">✕</button>
+            </span>
+          ))}
+          {phrases.length === 0 && <span className="text-[11.5px]" style={{ color: 'var(--text-4)' }}>None</span>}
+        </div>
+        <input
+          className="lg-input"
+          placeholder="Type a phrase, press Enter to add"
+          value={phraseInput}
+          onChange={e => setPhraseInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addPhrase(); } }}
+        />
+
+        {subHead('Active Languages', 'mt-4')}
+        <p className="m-0 mb-2 text-[11px]" style={{ color: 'var(--text-4)' }}>
+          Languages translated &amp; scanned by the Input Guard. All selected = all languages.
+        </p>
+        <div className="grid gap-1.5 mb-3" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+          {supportedLangs.map(code => (
+            <label key={code} className="flex items-center gap-1.5 text-[12px] cursor-pointer" style={{ color: 'var(--text-2)' }}>
+              <input type="checkbox" checked={langActive(code)} onChange={() => toggleLang(code)} />
+              <span className="font-mono uppercase">{code}</span>
+            </label>
+          ))}
+          {supportedLangs.length === 0 && <span className="text-[11.5px]" style={{ color: 'var(--text-4)' }}>—</span>}
+        </div>
+      </div>
+      <SaveBar dirty={dirty} busy={busy} err={err} onSave={save} />
+    </div>
+  );
+}
+
+/* ── Section 2: prompt guard (LLM-as-judge policy) ─── */
+function PromptGuardCard({ ep, onUpdate }) {
+  const [enabled, setEnabled] = useState(!!ep.prompt_guard_enabled);
+  const [prompt, setPrompt]   = useState(ep.prompt_guard_prompt || '');
+  const [model, setModel]     = useState(ep.prompt_guard_model || 'gpt-4o-mini');
+  const [action, setAction]   = useState(ep.prompt_guard_action || 'block');
+  const [dirty, setDirty]     = useState(false);
+  const [busy, setBusy]       = useState(false);
+  const [err, setErr]         = useState('');
+
+  useEffect(() => {
+    setEnabled(!!ep.prompt_guard_enabled);
+    setPrompt(ep.prompt_guard_prompt || '');
+    setModel(ep.prompt_guard_model || 'gpt-4o-mini');
+    setAction(ep.prompt_guard_action || 'block');
+    setDirty(false); setErr('');
+  }, [ep.id]);
+
+  const mark = setter => val => { setter(val); setDirty(true); };
+
+  async function save() {
+    setBusy(true); setErr('');
+    try {
+      await onUpdate(ep.id, {
+        prompt_guard_enabled: enabled,
+        prompt_guard_prompt: prompt.trim() || null,
+        prompt_guard_model: model,
+        prompt_guard_action: action,
+      });
+      setDirty(false);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="lg-card mt-[18px]">
+      <SectionTitle
+        title="Prompt Guard"
+        subtitle="LLM-as-judge policy layer. Non-deterministic. Adds latency and API cost per request."
+      />
+      <div style={{ padding: '4px 18px 0' }}>
+        <div className="flex items-center justify-between py-[10px]" style={{ borderBottom: enabled ? '1px solid var(--border)' : 'none' }}>
+          <span className="text-sm" style={{ color: 'var(--text-2)' }}>Enable prompt guard</span>
+          <Switch on={enabled} onToggle={() => mark(setEnabled)(!enabled)} />
+        </div>
+
+        {enabled && (
+          <>
+            <div className="flex flex-col gap-1.5 mt-3">
+              <label className="text-[11px] font-semibold tracking-[0.1em] uppercase" style={{ color: 'var(--text-3)' }}>Policy prompt</label>
+              <textarea
+                className="lg-input"
+                rows={5}
+                style={{ resize: 'vertical', fontFamily: 'inherit' }}
+                placeholder="You are a policy evaluator. Respond with only ALLOW or BLOCK followed by a brief reason..."
+                value={prompt}
+                onChange={e => mark(setPrompt)(e.target.value)}
+              />
+            </div>
+            <Field label="Model">
+              <select className="lg-select" value={model} onChange={e => mark(setModel)(e.target.value)}>
+                {PROMPT_GUARD_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label="Action" last>
+              <select className="lg-select" value={action} onChange={e => mark(setAction)(e.target.value)}>
+                {PROMPT_GUARD_ACTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </Field>
+          </>
+        )}
+      </div>
+      <SaveBar dirty={dirty} busy={busy} err={err} onSave={save} />
     </div>
   );
 }
@@ -134,6 +393,9 @@ function EndpointDetail({ ep, onUpdate, onDelete }) {
           <Field label="Top K" last><span className="text-sm font-mono" style={{ color: 'var(--text-2)' }}>{ep.kb_top_k ?? 4}</span></Field>
         </div>
       </div>
+
+      <GuardRulesCard ep={ep} onUpdate={onUpdate} />
+      <PromptGuardCard ep={ep} onUpdate={onUpdate} />
     </div>
   );
 }
